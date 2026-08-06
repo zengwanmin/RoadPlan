@@ -251,15 +251,20 @@ def plane_lcc(L_m):
     这些项均正比于里程 L, 故最小化平面 LCC 等价于在满足平曲线约束下缩短里程/占地。
     桥隧 CB 与土方 C_TU 分别属结构/纵断面阶段, 此处平面阶段不计(最终 C 仍由 objectives_joint 全量计)。
     """
-    from params import COST_UNIT
+    from params import COST_UNIT, MAINTENANCE
     width = CASE["road_width_m"]
     area_mu = (L_m * width) / 666.67
     CR = area_mu * COST_UNIT["farmland_per_mu"] + (L_m / 1000.0) * 5000.0   # 式3.42-3.44
     CS = COST_UNIT["subgrade_per_m"] * L_m + COST_UNIT["pavement_per_m"] * (L_m / 1000.0)  # 式3.52-3.54
+    # 养护费 CQ (式3.55): 平面阶段无逐桩填挖信息, 仅计与里程相关的
+    #   基础项 γ 与车流量项 365·T_j·τ(坡面项属纵断面阶段, 由 objectives_joint 全量计)。
     t = LCC["analysis_years"]; ru = LCC["bank_rate"]
-    pv = sum(1.0 / (1 + ru) ** k for k in range(1, t + 1))
-    T_year = TRAFFIC["AADT"] * 365
-    CQ = 0.02 * CS * pv + 1e-4 * T_year * pv                                # 式3.55 基础/交通量项
+    AADT = TRAFFIC["AADT"]; r_j_pct = TRAFFIC["r_growth"] * 100
+    gamma = MAINTENANCE["gamma"]; tau = MAINTENANCE["tau"]
+    CQ = 0.0
+    for j in range(1, t + 1):
+        T_j = AADT * (1 + 0.014 * r_j_pct) ** j          # 第j年预测日交通量
+        CQ += (1.0 / (1 + ru) ** j) * L_m * (gamma + 365.0 * T_j * tau)
     return CR + CS + CQ
 
 

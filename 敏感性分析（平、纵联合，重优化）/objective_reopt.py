@@ -27,7 +27,8 @@ objective.py / objective_joint.py），仅把四类敏感性外部参数由固�
 """
 import numpy as np
 
-from params import (CASE, TRAFFIC, ENERGY_PRICE, LONG_STD_100, LCC, FLAT_STD_100)
+from params import (CASE, TRAFFIC, ENERGY_PRICE, LONG_STD_100, LCC, FLAT_STD_100,
+                    MAINTENANCE)
 from objective import (earthwork_cost, lcc_ping, fuel_energy, ev_energy, _grades)
 from objective_joint import decode_joint
 
@@ -70,11 +71,17 @@ def objectives_reopt(x, pc, P=None):
     # ---- 目标一 C：土方(式4.3) + 平面全周期(式3.41-3.55) ----
     C_TU, Vs, Vh = earthwork_cost(sta, gz_new, design_z, CASE["road_width_m"])
     C_PING, cinfo = lcc_ping(L_new, sta, gz_new, design_z)
-    # 养护费随交通量增长的增量 ΔCQ（式3.55 交通量项；同 run_sensitivity 口径）
-    AADT0 = TRAFFIC["AADT"]; t = LCC["analysis_years"]
-    T_g = AADT0 * 365.0 * (1 + rj) ** t
-    T_0 = AADT0 * 365.0
-    dCQ = 1e-4 * (T_g - T_0) * _pv_factor()
+    # 养护费随交通量增长的增量 ΔCQ（式3.55 车流量项的敏感性偏差）:
+    #   lcc_ping 已含基准增长率 r_growth 下的 CQ; 此处叠加"本采样点增长率 rj
+    #   与基准增长率之差"引起的车流量项增量, 系数用 MAINTENANCE.tau(与式3.55一致)。
+    AADT0 = TRAFFIC["AADT"]; t = LCC["analysis_years"]; ru = LCC["bank_rate"]
+    r_base_pct = TRAFFIC["r_growth"] * 100          # 基准增长率(与 lcc_ping 一致)
+    tau = MAINTENANCE["tau"]
+    dCQ = 0.0
+    for j in range(1, t + 1):
+        T_j_sens = AADT0 * (1 + rj) ** j                       # 采样点增长率下第j年日交通量
+        T_j_base = AADT0 * (1 + 0.014 * r_base_pct) ** j       # 基准增长下第j年日交通量
+        dCQ += (1.0 / (1 + ru) ** j) * L_new * 365.0 * (T_j_sens - T_j_base) * tau
     C = C_PING + C_TU + dCQ
 
     # ---- 目标二 E：油电混合车流全生命周期能耗(式4.4-4.18) ----

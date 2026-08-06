@@ -17,7 +17,7 @@ objective.py — 立体线形双目标(全生命周期成本 C / 油电混合能
 import numpy as np
 from params import (FUEL_CAR, EV, PHYS, TRAFFIC, ENERGY_PRICE, COST_UNIT,
                     LCC, EARTHWORK, BRIDGE_TUNNEL, DESIGN_STD, LONG_STD_100,
-                    CASE, FLAT_STD_100)
+                    CASE, FLAT_STD_100, MAINTENANCE)
 
 
 # =============================================================
@@ -99,25 +99,41 @@ def lcc_ping(total_len_m, sta, gz, design_z):
     CX = COST_UNIT["pavement_per_m"] * (L / 1000.0)          # 式3.54 铺面(按km计)
     CS = CV + CX
 
-    # (4) 养护费用 CQ (式3.55): 与交通量、断面尺寸、边坡相关, 折现30年
+    # (4) 养护费用 CQ (式3.55):
+    # CQ = Σ_j [1/(1+ru)^j] × Σ_i l_i × {γ + 365·T_j·τ + c_ij·[α·Ws·ms² + β·Wh·mh²
+    #       + (1-α-β)·(Ws·ms² + Wh·mh²)]}
+    # 其中: T_j = 第j年预测日交通量 = AADT × (1+0.014·rj)^j; 365·T_j = 年交通量
+    #       Ws,Wh = 挖/填处横断面宽度; ms,mh = 挖/填边坡坡率
     t = LCC["analysis_years"]
     ru = LCC["bank_rate"]
     AADT = TRAFFIC["AADT"]
-    T_year = AADT * 365
-    m_slope = EARTHWORK["side_slope"]
-    h = np.abs(dz)
-    # 单位养护费(式3.55核心项)近似: 基础养护 + 交通量项 + 边坡项
-    base_maint = 0.02 * CS                # 年基础养护(占建设费比例, 工程标定)
-    # 折现累计(等额年金现值)
-    pv_factor = sum(1.0 / (1 + ru) ** k for k in range(1, t + 1))
-    # 边坡养护项(工程标定): 改为沿里程积分的【面积口径】, 与土方 C_TU(式4.3)同为
-    # 体积/面积量纲, 故与桩号离散步长无关。系数 0.5 元/m^2 由原"逐桩号 50 元/桩"口径
-    # 在 100 m 步长下等值折算而来(50/100=0.5), 使 100 m 步长的数值保持不变, 而
-    # 10 m / 25 m 等更密步长下不再因桩号变多而凭空放大(离散化伪影修正)。
-    slope_maint_area = np.sum(0.5 * (h[:-1] + h[1:]) * np.diff(sta))   # m^2
-    CQ = base_maint * pv_factor \
-        + 1e-4 * T_year * pv_factor \
-        + slope_maint_area * m_slope * 0.5
+    r_j_pct = TRAFFIC["r_growth"] * 100   # 增长系数转百分数(式3.55中 rj 为百分数)
+    m_s = EARTHWORK["side_slope"]          # 挖方边坡坡率 ms (1:1.5)
+    m_h = EARTHWORK["side_slope"]          # 填方边坡坡率 mh (同值)
+    gamma = MAINTENANCE["gamma"]
+    tau = MAINTENANCE["tau"]
+    c_ij = MAINTENANCE["c_soil"]
+    alpha = MAINTENANCE["alpha"]
+    beta = MAINTENANCE["beta"]
+
+    dL = np.diff(sta)
+    # 各段填/挖横断面宽度: 有填挖时取路基宽度, 无则为0
+    W_s_arr = np.where(dz[:-1] < 0, width, 0.0)   # 挖方段 Ws = 路基宽度
+    W_h_arr = np.where(dz[:-1] > 0, width, 0.0)   # 填方段 Wh = 路基宽度
+
+    # 坡面养护项 (式3.55 大括号内第三项)
+    slope_term = (alpha * W_s_arr * m_s**2
+                  + beta * W_h_arr * m_h**2
+                  + (1 - alpha - beta) * (W_s_arr * m_s**2 + W_h_arr * m_h**2))
+
+    # 逐年折现累加
+    CQ = 0.0
+    for j in range(1, t + 1):
+        # T_j = 第j年预测日交通量; 365·T_j = 年交通量 (式3.55 定义)
+        T_j = AADT * (1 + 0.014 * r_j_pct) ** j
+        discount_j = 1.0 / (1 + ru) ** j
+        yearly = np.sum(dL * (gamma + 365.0 * T_j * tau + c_ij * slope_term))
+        CQ += discount_j * yearly
 
     C_PING = CR + CB + CS + CQ            # 式3.41
     return C_PING, dict(CR=CR, CB=CB, CS=CS, CQ=CQ, L_bridge=L_bridge, L_tunnel=L_tunnel)
