@@ -109,9 +109,14 @@ def lcc_ping(total_len_m, sta, gz, design_z):
     base_maint = 0.02 * CS                # 年基础养护(占建设费比例, 工程标定)
     # 折现累计(等额年金现值)
     pv_factor = sum(1.0 / (1 + ru) ** k for k in range(1, t + 1))
+    # 边坡养护项(工程标定): 改为沿里程积分的【面积口径】, 与土方 C_TU(式4.3)同为
+    # 体积/面积量纲, 故与桩号离散步长无关。系数 0.5 元/m^2 由原"逐桩号 50 元/桩"口径
+    # 在 100 m 步长下等值折算而来(50/100=0.5), 使 100 m 步长的数值保持不变, 而
+    # 10 m / 25 m 等更密步长下不再因桩号变多而凭空放大(离散化伪影修正)。
+    slope_maint_area = np.sum(0.5 * (h[:-1] + h[1:]) * np.diff(sta))   # m^2
     CQ = base_maint * pv_factor \
         + 1e-4 * T_year * pv_factor \
-        + np.sum(h) * m_slope * 50.0      # 边坡养护项(工程标定)
+        + slope_maint_area * m_slope * 0.5
 
     C_PING = CR + CB + CS + CQ            # 式3.41
     return C_PING, dict(CR=CR, CB=CB, CS=CS, CQ=CQ, L_bridge=L_bridge, L_tunnel=L_tunnel)

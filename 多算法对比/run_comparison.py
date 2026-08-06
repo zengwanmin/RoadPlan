@@ -14,8 +14,27 @@ run_comparison.py — 多算法对比主程序 (实验设计方案2 · 实验二
 
 数据来源: 数据.xlsx (北环高速实测轨迹, 不可杜撰)
 公式来源: 林坤锐学位论文 (objective.py 已逐条标注式号)
+
+用法:
+  python3 run_comparison.py            # 正式全量 (6规模×6算法×30次, ~3 h)
+  python3 run_comparison.py --smoke    # 冒烟测试 (iter=5, n_runs=3, 2个规模)
+  python3 run_comparison.py --serial   # 强制单进程串行(约 10 h, 供严格计时复核)
+
+【并行粒度: 只按"规模"并行, 规模内部严格串行】
+  表B1/B2 把"平均运行时间(s)"作为结果列上报, 因此【同一规模内的 6 个算法、30 次
+  独立运行必须在同一条件下串行测得】, 否则算法间的耗时不再可比。本脚本只把 6 个
+  【规模】放到 6 个进程里跑(每规模一个进程, 内部完全串行), 既把墙钟时间从 ~10 h
+  压到 ~3 h(受最慢的 P6 支配), 又保证每张表里算法之间的耗时比较是公平的。
+  仅 6 进程并发, 内存带宽/缓存争用可忽略。
+  各进程结果与串行完全一致: 每次运行的初始种群与随机种子均由 (规模, 算法, run 序号)
+  唯一确定(default_rng(1000+r) / seed=1000+r), 与执行顺序无关。
 """
-import os, json, time
+import os, json, time, argparse, multiprocessing as mp
+# 多进程下禁用 BLAS 内部多线程, 避免线程数超订(每进程只用 1 个核), 否则
+# 各进程互相抢核会让 runtime_mean 失真。必须在 import numpy 之前设置。
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, "1")
 import numpy as np
 
 from params import ALGO
@@ -93,116 +112,156 @@ def pareto_front_by_weights(algo, ctx, C_ref, E_ref, lb, ub, pop0,
     return nondominated(np.array(pts))
 
 
+def run_scale(job):
+    """
+    单个问题规模的完整对比(6 算法 × n_runs 次 + Pareto 前沿 + 统计检验)。
+    【规模内部完全串行】: 6 个算法、n_runs 次独立运行依次执行, 使 runtime_mean
+    在同一条件下测得、算法之间可直接比较(表B1/B2 上报运行时间)。
+    返回 (规模键, 该规模结果 dict)。
+    """
+    sk, step_m, label, pop_size, max_iter, n_runs, align = job
+    t_scale = time.time()
+    sta, gz = resample_profile(align, step_m=step_m)
+    ctx = dict(sta=sta, gz=gz, total_len_m=align["s"][-1])
+    dim = len(sta); lb, ub = np.zeros(dim), np.ones(dim)
+
+    # 熵权法权重(基准种群客观确定, 该规模统一)
+    base_rng = np.random.default_rng(2025)
+    base_pop = base_rng.random((pop_size, dim))
+    C0 = np.array([objectives(base_pop[i], ctx)[0] for i in range(pop_size)])
+    E0 = np.array([objectives(base_pop[i], ctx)[1] for i in range(pop_size)])
+    wC, wE = entropy_weights(C0, E0)
+    C_ref, E_ref = float(C0.mean()), float(E0.mean())
+    print(f"=== {label}  dim={dim}  wC={wC:.3f} wE={wE:.3f} ===", flush=True)
+
+    scale_res = dict(dim=dim, step_m=step_m, label=label,
+                     wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
+                     algos={}, curves={}, fronts={})
+    F_samples = {}   # 供统计检验: {algo:[n_runs best_f]}
+
+    for algo in ALGOS:
+        best_fs, conv_gens, runtimes = [], [], []
+        run_curves = []
+        for r in range(n_runs):
+            rng = np.random.default_rng(1000 + r)
+            pop0 = rng.random((pop_size, dim))
+            if algo == "NSGA-II":
+                # NSGA-II 双目标: best_f 取其前沿中标量化最优点(同口径)
+                fbi = make_biobj_fn(ctx, C_ref, E_ref)
+                t0 = time.time()
+                rn = run_NSGA2(fbi, lb, ub, pop0, max_iter, 1000 + r)
+                rt = time.time() - t0
+                fr = rn["front_F"]
+                scal = wC * fr[:, 0] + wE * fr[:, 1]
+                bf = float(scal.min())
+                best_fs.append(bf)
+                conv_gens.append(max_iter)  # NSGA-II 无单点收敛曲线
+                runtimes.append(rt)
+                if r == n_runs // 2:
+                    run_curves.append(None)
+            else:
+                f = make_scalar_fn(ctx, wC, wE, C_ref, E_ref)
+                bf, curve, rt, bx = run_one_scalar(algo, f, lb, ub, pop0,
+                                                   max_iter, 1000 + r)
+                best_fs.append(bf)
+                conv_gens.append(convergence_gen(curve))
+                runtimes.append(rt)
+                if r == n_runs // 2:
+                    run_curves.append(curve.tolist())
+        best_fs = np.array(best_fs)
+        F_samples[algo] = best_fs.tolist()
+        scale_res["algos"][algo] = dict(
+            best=float(best_fs.min()), mean=float(best_fs.mean()),
+            std=float(best_fs.std()), median=float(np.median(best_fs)),
+            conv_gen_mean=float(np.mean(conv_gens)),
+            runtime_mean=float(np.mean(runtimes)),
+            best_fs=best_fs.tolist())
+        if run_curves and run_curves[0] is not None:
+            scale_res["curves"][algo] = run_curves[0]
+        print(f"  [{sk}][{algo:8s}] best={best_fs.min():.4f} mean={best_fs.mean():.4f} "
+              f"std={best_fs.std():.4f} t={np.mean(runtimes):.2f}s", flush=True)
+
+    # ---- Pareto 前沿(六组规模均详细计算, 用固定种子的权重扫描) ----
+    print(f"  [{sk}][Pareto] 权重扫描生成各算法前沿 ...", flush=True)
+    fronts = {}
+    fseed_pop = np.random.default_rng(1500).random((pop_size, dim))
+    for algo in ALGOS:
+        fr = pareto_front_by_weights(algo, ctx, C_ref, E_ref, lb, ub,
+                                     fseed_pop, max_iter, 1500,
+                                     n_weights=11)
+        fronts[algo] = fr.tolist()
+    ref_front = build_reference_front([np.array(fronts[a]) for a in ALGOS])
+    # HV 参考点: 所有前沿并集的最大值再放宽10%
+    allpts = np.vstack([np.array(fronts[a]) for a in ALGOS])
+    ref_pt = [allpts[:, 0].max() * 1.05, allpts[:, 1].max() * 1.05]
+    pmet = {}
+    for algo in ALGOS:
+        fr = np.array(fronts[algo])
+        pmet[algo] = dict(
+            HV=hypervolume_2d(fr, ref_pt),
+            IGD=igd(fr, ref_front),
+            Spacing=spacing(fr),
+            n_points=len(fr))
+    scale_res["fronts"] = fronts
+    scale_res["pareto_metrics"] = pmet
+    scale_res["ref_point"] = ref_pt
+
+    # ---- 统计检验(§3.4): Wilcoxon(IJS vs 其它) + Friedman ----
+    wil = {a: wilcoxon_ranksum(F_samples["IJS"], F_samples[a])
+           for a in ALGOS if a != "IJS"}
+    chi2, fp, avg_rank = friedman_ranks(F_samples)
+    scale_res["stats"] = dict(wilcoxon_vs_IJS=wil,
+                              friedman_chi2=chi2, friedman_p=fp,
+                              friedman_avg_rank=avg_rank)
+    print(f"=== {label} 完成, 耗时 {(time.time()-t_scale)/60:.1f} min ===", flush=True)
+    return sk, scale_res
+
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--smoke", action="store_true",
+                    help="冒烟测试(iter=5, n_runs=3, 仅 P1/P6 两个规模)")
+    ap.add_argument("--serial", action="store_true",
+                    help="强制单进程串行执行所有规模(约 10 h, 供严格计时复核)")
+    args = ap.parse_args()
+
     t_all = time.time()
     pop_size = ALGO["pop_size"]
     max_iter = ALGO["max_iter"]
     n_runs = ALGO["n_runs"]
+    scale_keys = list(SCALES.keys())
+    if args.smoke:
+        max_iter, n_runs = 5, 3
+        scale_keys = ["P1", "P6"]        # 最小与最大维度各取一个, 验证两端
+        print(f"[冒烟] max_iter={max_iter} n_runs={n_runs} scales={scale_keys}")
 
     align = load_alignment()
+    jobs = [(sk, SCALES[sk]["step_m"], SCALES[sk]["label"],
+             pop_size, max_iter, n_runs, align) for sk in scale_keys]
+
+    if args.serial or len(jobs) == 1:
+        n_workers = 1
+        print(f"[执行] 单进程串行, {len(jobs)} 个规模")
+        results = [run_scale(j) for j in jobs]
+    else:
+        n_workers = len(jobs)            # 一个规模一个进程(规模内部仍串行)
+        print(f"[执行] {n_workers} 进程(每规模一个, 规模内部串行以保证运行时间可比)")
+        with mp.Pool(n_workers) as pool:
+            results = pool.map(run_scale, jobs)
+
     out = dict(meta=dict(pop_size=pop_size, max_iter=max_iter, n_runs=n_runs,
                          total_km=align["total_km"], algos=ALGOS,
-                         scales={k: v["label"] for k, v in SCALES.items()}),
+                         scales={k: SCALES[k]["label"] for k in scale_keys},
+                         smoke=bool(args.smoke), n_workers=n_workers,
+                         execution="按规模并行、规模内部串行(运行时间在同一条件下测得)"),
                scales={})
+    for sk, sr in results:
+        out["scales"][sk] = sr
 
-    for sk, sc in SCALES.items():
-        sta, gz = resample_profile(align, step_m=sc["step_m"])
-        ctx = dict(sta=sta, gz=gz, total_len_m=align["s"][-1])
-        dim = len(sta); lb, ub = np.zeros(dim), np.ones(dim)
-
-        # 熵权法权重(基准种群客观确定, 该规模统一)
-        base_rng = np.random.default_rng(2025)
-        base_pop = base_rng.random((pop_size, dim))
-        C0 = np.array([objectives(base_pop[i], ctx)[0] for i in range(pop_size)])
-        E0 = np.array([objectives(base_pop[i], ctx)[1] for i in range(pop_size)])
-        wC, wE = entropy_weights(C0, E0)
-        C_ref, E_ref = float(C0.mean()), float(E0.mean())
-        print(f"\n=== {sc['label']}  dim={dim}  wC={wC:.3f} wE={wE:.3f} ===")
-
-        scale_res = dict(dim=dim, wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
-                         algos={}, curves={}, fronts={})
-        F_samples = {}   # 供统计检验: {algo:[30 best_f]}
-
-        for algo in ALGOS:
-            best_fs, conv_gens, runtimes = [], [], []
-            run_curves = []
-            for r in range(n_runs):
-                rng = np.random.default_rng(1000 + r)
-                pop0 = rng.random((pop_size, dim))
-                if algo == "NSGA-II":
-                    # NSGA-II 双目标: best_f 取其前沿中标量化最优点(同口径)
-                    fbi = make_biobj_fn(ctx, C_ref, E_ref)
-                    t0 = time.time()
-                    rn = run_NSGA2(fbi, lb, ub, pop0, max_iter, 1000 + r)
-                    rt = time.time() - t0
-                    fr = rn["front_F"]
-                    scal = wC * fr[:, 0] + wE * fr[:, 1]
-                    bf = float(scal.min())
-                    best_fs.append(bf)
-                    conv_gens.append(max_iter)  # NSGA-II 无单点收敛曲线
-                    runtimes.append(rt)
-                    if r == n_runs // 2:
-                        run_curves.append(None)
-                else:
-                    f = make_scalar_fn(ctx, wC, wE, C_ref, E_ref)
-                    bf, curve, rt, bx = run_one_scalar(algo, f, lb, ub, pop0,
-                                                       max_iter, 1000 + r)
-                    best_fs.append(bf)
-                    conv_gens.append(convergence_gen(curve))
-                    runtimes.append(rt)
-                    if r == n_runs // 2:
-                        run_curves.append(curve.tolist())
-            best_fs = np.array(best_fs)
-            F_samples[algo] = best_fs.tolist()
-            scale_res["algos"][algo] = dict(
-                best=float(best_fs.min()), mean=float(best_fs.mean()),
-                std=float(best_fs.std()), median=float(np.median(best_fs)),
-                conv_gen_mean=float(np.mean(conv_gens)),
-                runtime_mean=float(np.mean(runtimes)),
-                best_fs=best_fs.tolist())
-            if run_curves and run_curves[0] is not None:
-                scale_res["curves"][algo] = run_curves[0]
-            print(f"  [{algo:8s}] best={best_fs.min():.4f} mean={best_fs.mean():.4f} "
-                  f"std={best_fs.std():.4f} t={np.mean(runtimes):.2f}s")
-
-        # ---- Pareto 前沿(六组规模均详细计算, 用固定种子的权重扫描) ----
-        print("  [Pareto] 权重扫描生成各算法前沿 ...")
-        fronts = {}
-        fseed_pop = np.random.default_rng(1500).random((pop_size, dim))
-        for algo in ALGOS:
-            fr = pareto_front_by_weights(algo, ctx, C_ref, E_ref, lb, ub,
-                                         fseed_pop, max_iter, 1500,
-                                         n_weights=11)
-            fronts[algo] = fr.tolist()
-        ref_front = build_reference_front([np.array(fronts[a]) for a in ALGOS])
-        # HV 参考点: 所有前沿并集的最大值再放宽10%
-        allpts = np.vstack([np.array(fronts[a]) for a in ALGOS])
-        ref_pt = [allpts[:, 0].max() * 1.05, allpts[:, 1].max() * 1.05]
-        pmet = {}
-        for algo in ALGOS:
-            fr = np.array(fronts[algo])
-            pmet[algo] = dict(
-                HV=hypervolume_2d(fr, ref_pt),
-                IGD=igd(fr, ref_front),
-                Spacing=spacing(fr),
-                n_points=len(fr))
-        scale_res["fronts"] = fronts
-        scale_res["pareto_metrics"] = pmet
-        scale_res["ref_point"] = ref_pt
-
-        # ---- 统计检验(§3.4): Wilcoxon(IJS vs 其它) + Friedman ----
-        wil = {a: wilcoxon_ranksum(F_samples["IJS"], F_samples[a])
-               for a in ALGOS if a != "IJS"}
-        chi2, fp, avg_rank = friedman_ranks(F_samples)
-        scale_res["stats"] = dict(wilcoxon_vs_IJS=wil,
-                                  friedman_chi2=chi2, friedman_p=fp,
-                                  friedman_avg_rank=avg_rank)
-        out["scales"][sk] = scale_res
-
-    with open(os.path.join(RESULTS, "comparison_results.json"), "w",
-              encoding="utf-8") as fp:
+    fn = "comparison_results_smoke.json" if args.smoke else "comparison_results.json"
+    with open(os.path.join(RESULTS, fn), "w", encoding="utf-8") as fp:
         json.dump(out, fp, ensure_ascii=False, indent=2)
-    print(f"\n[完成] 结果已保存 results/comparison_results.json  总耗时 {time.time()-t_all:.1f}s")
+    print(f"\n[完成] 结果已保存 results/{fn}  总耗时 {(time.time()-t_all)/60:.1f} min")
 
 
 if __name__ == "__main__":

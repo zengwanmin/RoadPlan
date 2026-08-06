@@ -17,6 +17,11 @@ run_reopt.py — 敏感性分析【每点重优化】主程序（实验四·重�
   python3 run_reopt.py --smoke    # 冒烟测试 (iter=5, 少量点, 验证管线)
 """
 import os, json, time, argparse, multiprocessing as mp
+# 多进程下禁用 BLAS 内部多线程(每进程 1 核), 必须在 import numpy 之前设置。
+# 本实验并行度高(默认 cpu-4), 不设置会导致线程数严重超订而整体变慢。
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, "1")
 import numpy as np
 
 from params import ALGO, TRAFFIC, LCC
@@ -29,7 +34,10 @@ from objective_reopt import objectives_reopt, make_scalar_reopt
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.path.join(HERE, "results"); os.makedirs(RESULTS, exist_ok=True)
 YI = 1e8
-N_WORKERS = 7          # 8 核留 1 核余量
+# 并行进程数: 按本机核数自适应(留 4 核余量), 可用 --workers 覆盖。
+# 每个采样点是一次独立的完整 IJS 寻优, 彼此无数据依赖, 且种子由 SEED_BASE+gid
+# 唯一确定, 故并行度不影响任何数值结果, 只影响墙钟时间。
+N_WORKERS = max(1, (os.cpu_count() or 8) - 4)
 SEED_BASE = 20250722   # 复现用固定种子基数
 
 # --- worker 进程内的全局(由 initializer 设定, 兼容 macOS spawn) ---
@@ -138,10 +146,14 @@ def build_tasks(grids):
 
 
 def main():
-    global POP_SIZE, MAX_ITER
+    global POP_SIZE, MAX_ITER, N_WORKERS
     ap = argparse.ArgumentParser()
     ap.add_argument("--smoke", action="store_true", help="冒烟测试(iter=5,少量点)")
+    ap.add_argument("--workers", type=int, default=0,
+                    help=f"并行进程数(默认自适应: 本机 {N_WORKERS})")
     args = ap.parse_args()
+    if args.workers:
+        N_WORKERS = args.workers
 
     t_all = time.time()
     align = load_alignment()
@@ -193,7 +205,12 @@ def main():
 
     # 组织为四项结构 + 基准
     out = _assemble(recs, tasks, grids, align)
-    fn = os.path.join(RESULTS, "reopt_results.json")
+    out["meta"]["smoke"] = bool(args.smoke)
+    out["meta"]["n_workers"] = N_WORKERS
+    out["meta"]["wall_time_min"] = round((time.time() - t_all) / 60.0, 2)
+    fn = os.path.join(RESULTS,
+                      "reopt_results_smoke.json" if args.smoke
+                      else "reopt_results.json")
     with open(fn, "w", encoding="utf-8") as fp:
         json.dump(out, fp, ensure_ascii=False, indent=2)
     print(f"[完成] {fn}  总耗时 {(time.time()-t_all)/60:.1f} min")

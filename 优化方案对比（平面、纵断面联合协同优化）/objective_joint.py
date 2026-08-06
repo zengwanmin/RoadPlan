@@ -6,16 +6,40 @@ objective_joint.py — 平纵断面【联合】优化目标 (方案B: 真正的�
   本模块把【平面控制点法向偏移】与【纵断面变坡点高程】放入【同一决策向量】,
   在同一次 IJS 寻优中一起搜索, 实现平面走向与纵断面坡度的一体化协同。
 
-求解方法: 三维解空间(x, y, z)协同——平面走向由每个桩号控制点的法向偏移决定其
-  (x, y)坐标, 纵断面由每个桩号的高程 z 决定; 二者放入【同一决策向量】, 在同一次
-  IJS 寻优中对 (x, y, z) 三维立体线形进行全面彻底的搜索。平面与纵断面的求解桩号
-  步长均为 10 m(STEP_M), 即沿全线每 10 m 布设一个平面控制点与一个变坡点, 使平面
-  与纵断面在全线范围内均可被充分调整。
+求解方法: 三维解空间(x, y, z)协同——平面走向由平面控制点的法向偏移决定其 (x, y)
+  坐标, 纵断面由每个桩号的高程 z 决定; 二者放入【同一决策向量】, 在同一次 IJS 寻优
+  中对 (x, y, z) 三维立体线形一起搜索。
 
-决策向量 x ∈ [0,1]^(N_CTRL + M_PROF):
-  x[:N_CTRL]  -> 平面 N_CTRL 个控制点法向偏移 δ_k ∈ [-W, W](走廊带半宽 W) -> 决定 (x,y)
-  x[N_CTRL:]  -> 沿【新平面线位】等分的 M_PROF 个变坡点高程 z 调整
-  其中 N_CTRL = M_PROF = 全线里程 / 10 m + 1(≈2247), 平面/纵断面步长均为 10 m。
+【决策变量的离散尺度 vs 目标函数的评价尺度(二者分开)】
+  · 决策变量都取 400 m 一个(STEP_CTRL_M):
+      平面 N_CTRL=57 个控制点(法向偏移 δ) + 纵断面 M_PROF=57 个【变坡点】高程。
+  · 目标函数一律在 10 m 桩号上积分(STEP_EVAL_M): M_EVAL=2247 个评价桩号,
+      土方(式4.3)、能耗(式4.4-4.18)、纵坡/坡差约束、边坡危险度全部按 10 m 计,
+      评价精度不受决策维度下降的影响。变坡点高程线性插值到评价桩号, 故变坡点之间
+      为等坡段、坡度只在变坡点处改变 —— 与真实纵断面设计一致。
+
+  为何平面必须取 400 m(不能取 10 m): 平面受平曲线最小半径 R ≥ 400 m(表3.2 极限值)
+  约束, 相邻控制点的横向错动 A 在波长 λ=2Δs 上产生的曲率半径为 R = λ²/(4π²A), 即
+  Δs 越小、可行的 A 越小: Δs=10 m 时 A ≤ 2.5 cm, Δs=400 m 时 A ≤ 40 m。若平面取
+  10 m, 则 ±800 m 走廊带内几乎全域不可行(实测中线自身在 10 m 控制点下 Rmin 仅
+  53.5 m, 系拟合 GPS 噪声), 初始种群线形长度可达 1084 km, 平面搜索退化为整体平移。
+
+  为何纵断面变坡点也必须取 400 m(不能取 10 m): 两方面。
+   (a) 工程上, 每 10 m 一个变坡点等价于全线 2246 处独立变坡, 本就不是有效的纵断面
+       设计(论文 §4.5.1 的决策变量是"变坡点"高程, 个数应远小于评价桩号数), 这也是
+       相邻坡差(式4.28-4.29)频繁违规的来源;
+   (b) 算法上, 57 个平面维若与 2247 个纵断面维放在同一决策向量里, 会被彻底淹没:
+       IJS 每次移动同时扰动全部维度并按整体贪婪接受, "改善平面但恶化纵断面"的候选
+       会被拒绝, 而纵断面在贴地附近已接近最优、任何随机扰动都使其变差, 于是平面
+       无法取得任何进展。实测: dim=2304 时联合优化 L=22.442 km, 相对现状仅缩短
+       0.01%(即 δ≈0, 平面完全没动), 且末 100 代 F 仅改善 1.7e-4(结构性停滞,
+       加迭代无用)。把两块维度调平(57+57)后, 平面立刻起作用: L=21.852 km(−2.6%),
+       约束惩罚从 1.66e8 降到 2.16e4(近乎完全可行)。
+  详见 运行记录与问题定位.md §3.3-3.4。
+
+决策向量 x ∈ [0,1]^(N_CTRL + M_PROF) = [0,1]^114:
+  x[:N_CTRL]  -> 平面 N_CTRL=57 个控制点法向偏移 δ_k ∈ [-W, W](走廊带半宽 W) -> (x,y)
+  x[N_CTRL:]  -> 沿【新平面线位】等分的 M_PROF=57 个变坡点高程 z 调整
 
 公式全部沿用林坤锐学位论文(见 objective.py 式号), 模型公式不变:
   平面里程/坐标 式3.1-3.4; 平曲线最小半径 表3.2(≥400m);
@@ -24,12 +48,23 @@ objective_joint.py — 平纵断面【联合】优化目标 (方案B: 真正的�
 【数据口径的诚实声明】
   数据.xlsx 仅提供实测中线一条轨迹的地面高程, 无面状 DEM(论文图6.6 有 DEM,
   本数据集未提供)。平面横向偏移后, 新点位的地面高程无法从数据直接读出, 本模块
-  采用"取最近实测中线点的地面高程"作为近似(cKDTree 最近邻)。此近似在走廊带内、
-  地形沿纵向变化为主时成立; 属数据限制下不杜撰的必要处理, 已在报告中说明。
+  采用"取【同里程】实测中线点的地面高程"作为近似(按里程比例 np.interp)。
+  此近似在走廊带内、地形沿纵向变化为主时成立; 属数据限制下不杜撰的必要处理。
+
+  【为何不用"最近实测点"(cKDTree 最近邻)】
+  最近邻写法在平面大幅侧移后会失效: 实测中线自身会折返/绕行, 侧移几百米后
+  相邻两个 10 m 桩号可能取到实测路线上相距数百米的两个点的高程, 产生虚假陡坡。
+  实测(两阶段最优平面, 侧移中位 569.7 m, 最大 736.2 m):
+      最近邻  -> 地面纵坡 |i|max = 104.66% (桩号 12354/12363 m 相距 9.5 m,
+                 最近邻索引跳了 154 个实测点≈246 m, 高程 32.72->22.79 m)
+      里程对应 -> 地面纵坡 |i|max =   6.66%
+  两者在 δ≈0 区(最近邻唯一成立的区域)差异为: C 恰好 0、E ≤ 0.014%,
+  故改用里程对应不影响原有结论, 只是把近似写成在全走廊带都成立的形式。
+  副产物: 单次目标函数求值 7.65 ms -> 0.80 ms(最近邻查询原占 92% 耗时)。
+  详见 运行记录与问题定位.md §3.2。
 """
 import numpy as np
 from scipy.interpolate import splprep, splev
-from scipy.spatial import cKDTree
 
 from params import (CASE, EARTHWORK, TRAFFIC, ENERGY_PRICE, LONG_STD_100, LCC,
                     FLAT_STD_100)
@@ -38,21 +73,26 @@ from objective import (earthwork_cost, lcc_ping, fuel_energy, ev_energy,
 from data_loader import load_alignment
 
 CORRIDOR_HALF_W = 800.0     # 走廊带半宽(m), 与 GapB 一致
-STEP_M = 10.0               # 平面/纵断面求解桩号步长(m): 全面彻底搜索
+STEP_CTRL_M = 400.0         # 【决策变量】间距(m): 平面控制点 与 纵断面变坡点 同为 400 m
+STEP_EVAL_M = 10.0          # 【目标函数评价】桩号间距(m): 土方/能耗/约束均按 10 m 积分
+# 兼容旧名(部分脚本/文档以此指代)
+STEP_PLANE_M = STEP_CTRL_M
+STEP_PROFILE_M = STEP_CTRL_M
 
-# 平面控制点数 N_CTRL 与纵断面变坡点数 M_PROF 均按 10 m 步长沿全线布置:
-# n = 全线里程 / STEP_M + 1(≈2247), 使平面(x,y)与纵断面(z)在全线范围内均可充分调整。
-def _n_stations(step_m=STEP_M):
+
+def _n_stations(step_m):
+    """沿实测平面线位按 step_m 等分的桩号个数 = 里程/step_m + 1。"""
     a = load_alignment()
     s = np.concatenate([[0], np.cumsum(np.hypot(np.diff(a["X"]), np.diff(a["Y"])))])
     return int(np.floor(s[-1] / step_m)) + 1
 
-N_CTRL = _n_stations()      # 平面控制点个数(每 10 m 一个) -> 决定 (x, y)
-M_PROF = N_CTRL             # 纵断面变坡点个数(每 10 m 一个) -> 决定 z
+N_CTRL = _n_stations(STEP_CTRL_M)   # 平面控制点个数(每 400 m 一个) -> 决定 (x, y)
+M_PROF = _n_stations(STEP_CTRL_M)   # 纵断面变坡点个数(每 400 m 一个) -> 决定 z
+M_EVAL = _n_stations(STEP_EVAL_M)   # 目标函数评价桩号个数(每 10 m 一个), 非决策变量
 
 
 def make_plane_context(align):
-    """由实测线位预计算: 控制点、法向、KDTree(供地面高程最近邻查询)、原始里程。"""
+    """由实测线位预计算: 平面控制点、单位左法向、实测里程剖面、高程可调幅度。"""
     X, Y = align["X"], align["Y"]
     z = align["ground_z"]
     # 等弧长重采样 N_CTRL 个平面控制点 + 单位左法向
@@ -62,10 +102,10 @@ def make_plane_context(align):
     tx = np.gradient(cx); ty = np.gradient(cy)
     tn = np.hypot(tx, ty) + 1e-9
     nx, ny = -ty / tn, tx / tn
-    tree = cKDTree(np.column_stack([X, Y]))     # 实测点 KDTree
     L0 = float(s[-1])
     amp = max(z.max() - z.min(), 10.0) * 0.6    # 纵断面高程可调幅度(同 objective.decode)
-    return dict(cx=cx, cy=cy, nx=nx, ny=ny, tree=tree, gz_meas=z,
+    return dict(cx=cx, cy=cy, nx=nx, ny=ny, gz_meas=z,
+                s_meas=s,          # 实测中线累计里程(m), 供按里程对应取地面高程
                 X=X, Y=Y, L0=L0, amp=amp)
 
 
@@ -77,8 +117,10 @@ def build_plane(pc, delta):
     px[-1], py[-1] = pc["cx"][-1], pc["cy"][-1]
     try:
         tck, _ = splprep([px, py], s=0.0, k=3)
-        # 样条密集采样点数与 10 m 步长匹配(至少覆盖每个控制点), 保证平面几何精度
-        n_dense = max(N_CTRL * 2, 1200)
+        # 样条密集采样点数按【10 m 评价步长】取(M_EVAL), 而非按控制点数(57):
+        # 平面里程 L 与曲率 R 都在这组密集点上算, 采样需比控制点间距(400 m)细得多,
+        # 才能准确解析样条在控制点之间的曲率极值。
+        n_dense = max(M_EVAL, 1200)
         uu = np.linspace(0, 1, n_dense)
         xx, yy = splev(uu, tck)
         return np.asarray(xx), np.asarray(yy)
@@ -100,26 +142,40 @@ def _plane_metrics(xx, yy):
 
 def decode_joint(x, pc):
     """
-    解码联合决策向量为 (新平面, 新桩号 sta, 新地面高程 gz_new, 设计高程 design_z)。
+    解码联合决策向量为 (新平面, 评价桩号 sta, 新地面高程 gz_new, 设计高程 design_z)。
+
+    决策变量(各 400 m 一个): 平面 N_CTRL 个法向偏移 + 纵断面 M_PROF 个变坡点高程。
+    返回的 sta / gz_new / design_z 都是 M_EVAL 个(10 m 一个)评价桩号上的量,
+    供土方、能耗、纵坡约束、边坡危险度按 10 m 分辨率积分。
     """
     W = CORRIDOR_HALF_W
     delta = (x[:N_CTRL] - 0.5) * 2.0 * W
     xx, yy = build_plane(pc, delta)
     L_new, R = _plane_metrics(xx, yy)
 
-    # 沿新线位弧长等分 M_PROF 个桩号
+    # 沿新线位弧长等分 M_EVAL 个【评价桩号】(每 10 m 一个)
     sarc = np.concatenate([[0], np.cumsum(np.hypot(np.diff(xx), np.diff(yy)))])
-    sta = np.linspace(0, sarc[-1], M_PROF)
-    xj = np.interp(sta, sarc, xx); yj = np.interp(sta, sarc, yy)
+    sta = np.linspace(0, sarc[-1], M_EVAL)
 
-    # 新桩号点的地面高程 = 最近实测中线点高程(数据限制下的近似, 见模块说明)
-    _, idx = pc["tree"].query(np.column_stack([xj, yj]))
-    gz_new = pc["gz_meas"][idx]
+    # 评价桩号的地面高程 = 【同里程】实测中线点高程(按里程比例线性插值)。
+    # 平面侧移后新线位里程 sarc[-1] 与实测里程 s_meas[-1] 不同, 故按比例对应。
+    # (不用最近邻: 侧移较大时最近邻会取到实测路线上相距数百米的点, 产生虚假陡坡,
+    #  见模块 docstring 的实测数据)
+    s_meas = pc["s_meas"]
+    gz_new = np.interp(sta / sarc[-1] * s_meas[-1], s_meas, pc["gz_meas"])
 
-    # 纵断面变坡点高程(同 objective.decode 口径)
-    design_z = gz_new + (x[N_CTRL:] - 0.5) * 2.0 * pc["amp"]
+    # 纵断面: M_PROF 个变坡点(400 m 一个)的设计高程, 再线性插值到评价桩号。
+    # 变坡点高程 = 该处地面高程 ± 可调幅度(同 objective.decode 口径);
+    # 插值后变坡点之间为等坡段, 坡度仅在变坡点处改变(真实纵断面设计形态)。
+    sta_ctrl = np.linspace(0.0, sarc[-1], M_PROF)
+    gz_ctrl = np.interp(sta_ctrl / sarc[-1] * s_meas[-1], s_meas, pc["gz_meas"])
+    design_z_ctrl = gz_ctrl + (x[N_CTRL:] - 0.5) * 2.0 * pc["amp"]
+    design_z = np.interp(sta, sta_ctrl, design_z_ctrl)
+
     return dict(xx=xx, yy=yy, L_new=L_new, R=R, sta=sta,
-                gz_new=gz_new, design_z=design_z)
+                gz_new=gz_new, design_z=design_z,
+                sta_ctrl=sta_ctrl, gz_ctrl=gz_ctrl,
+                design_z_ctrl=design_z_ctrl)
 
 
 def objectives_joint(x, pc):
@@ -177,7 +233,8 @@ def make_scalar_joint(pc, wC, wE, C_ref, E_ref):
 # =============================================================
 #  两阶段(先平面后纵断面)对照所需的平面阶段 helper
 #  仅供 run_twostage.py 复现"先平面优化、再纵断面优化"的分阶段方法作为对比;
-#  平面/纵断面步长同为 10m(N_CTRL=M_PROF, 见上), 桥隧数据同联合方案(params.py)。
+#  平面步长 400m / 纵断面步长 10m(同联合方案, 见 STEP_PLANE_M / STEP_PROFILE_M),
+#  桥隧数据同联合方案(params.py), 保证两种方法在同一离散精度下可比。
 # =============================================================
 def build_plane_from_delta(pc, delta_norm):
     """由平面控制点归一化偏移 delta_norm∈[0,1]^N_CTRL 生成新平面。返回密集点+里程+R。"""

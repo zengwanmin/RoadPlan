@@ -9,8 +9,9 @@ run_twostage.py — 两阶段(先平面, 后纵断面)优化【对照】程序
     第二阶段(纵断面): 在冻结的最优平面上, 只搜变坡点高程, 双目标 min C + min E,
         熵权法客观标量化 IJS 寻优。二者串联、非同一次寻优(区别于联合协同的同时寻优)。
 
-  求解桩号步长: 平面与纵断面均为 10m(N_CTRL=M_PROF, 见 objective_joint.STEP_M),
-  与联合协同优化完全一致, 保证两种方法在同一离散精度下可比。
+  求解桩号步长: 平面控制点 400 m、纵断面变坡点 10 m(见 objective_joint 的
+  STEP_PLANE_M / STEP_PROFILE_M), 与联合协同优化完全一致, 保证两种方法在同一
+  离散精度下可比。
   桥隧长度/单位造价、能耗口径、成本口径均与联合协同方案一致(共用 params.py/objective*.py),
   数据来自 数据/ (北环高速实测轨迹 + 现状桥梁隧道统计), 不杜撰。
 
@@ -18,8 +19,15 @@ run_twostage.py — 两阶段(先平面, 后纵断面)优化【对照】程序
   M-A  现状方案(人工选线)   : 实测平面(δ=0) + 人工粗放纵断面(0.5km 平滑地面线), 未优化。
   M-S1 仅第一阶段(平面优化) : 最优平面 + 贴地纵断面, 体现平面阶段(里程/占地)贡献。
   M-C  两阶段优化方案       : Stage1 平面 -> Stage2 纵断面, 最终两阶段优化方案。
+
+用法:
+  python3 run_twostage.py            # 正式全量 (两阶段各一次 IJS, ~45 min)
+  python3 run_twostage.py --smoke    # 冒烟测试 (iter=5, 验证管线)
+
+【为何本脚本不并行】两阶段是严格串联的: 第二阶段必须在第一阶段冻结的最优平面上
+进行, 无法并行; 且各阶段内部只有一次 IJS 寻优。故本脚本单进程执行。
 """
-import os, json, time
+import os, json, time, argparse
 import numpy as np
 
 from params import ALGO
@@ -28,7 +36,8 @@ from algorithms import run, VARIANTS
 from objective import entropy_weights
 from objective_joint import (make_plane_context, objectives_joint, decode_joint,
                              make_scalar_plane, build_plane_from_delta, plane_lcc,
-                             N_CTRL, M_PROF, CORRIDOR_HALF_W, STEP_M)
+                             N_CTRL, M_PROF, CORRIDOR_HALF_W,
+                             STEP_PLANE_M, STEP_PROFILE_M)
 from safety import hazard_profile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -52,7 +61,9 @@ def evaluate(x, pc):
                 design_z=d["design_z"].tolist(), sta=d["sta"].tolist(),
                 gz_new=d["gz_new"].tolist(), Q_series=Q_series.tolist())
 def make_existing_x(pc, dim):
-    """现状方案 M-A: 平面 δ=0(实测中线) + 人工粗放纵断面(0.5km 平滑地面线)。"""
+    """现状方案 M-A: 平面 δ=0(实测中线) + 人工粗放纵断面(0.5km 平滑地面线)。
+    与 run_joint.make_existing_x 完全同口径: 先在 10m 评价桩号上平滑, 再采样到
+    400m 变坡点上反解归一化决策量。"""
     x = np.full(dim, 0.5)
     d0 = decode_joint(x, pc)
     gz = d0["gz_new"]; sta = d0["sta"]; amp = pc["amp"]
@@ -61,17 +72,28 @@ def make_existing_x(pc, dim):
     if win % 2 == 0:
         win += 1
     design_A = np.convolve(gz, np.ones(win) / win, mode="same")
-    x[N_CTRL:] = np.clip(0.5 + (design_A - gz) / (2.0 * amp), 0.0, 1.0)
+    design_A_ctrl = np.interp(d0["sta_ctrl"], sta, design_A)
+    x[N_CTRL:] = np.clip(
+        0.5 + (design_A_ctrl - d0["gz_ctrl"]) / (2.0 * amp), 0.0, 1.0)
     return x
 
 
 def main():
+    global MAX_ITER
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--smoke", action="store_true", help="冒烟测试(iter=5)")
+    args = ap.parse_args()
+    if args.smoke:
+        MAX_ITER = 5
+        print(f"[冒烟] iter={MAX_ITER}")
+
     t0 = time.time()
     align = load_alignment()
     pc = make_plane_context(align)
     dim = N_CTRL + M_PROF
     print(f"[数据] 北环高速 {align['total_km']:.3f} km")
-    print(f"[两阶段对照] dim={dim} (平面{N_CTRL}+纵断面{M_PROF}, 步长{STEP_M:.0f}m), "
+    print(f"[两阶段对照] dim={dim} (平面{N_CTRL}@{STEP_PLANE_M:.0f}m + "
+          f"纵断面{M_PROF}@{STEP_PROFILE_M:.0f}m), "
           f"走廊带±{CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}")
 
     # ---------- M-A 现状方案 ----------
@@ -129,13 +151,16 @@ def main():
     print(f"[里程] 现状 {res_A['L_km']:.3f}km -> 两阶段 {res_C['L_km']:.3f}km 缩短 {reduce_pct:.2f}%")
 
     out = dict(
-        meta=dict(dim=dim, N_ctrl=N_CTRL, M_prof=M_PROF, step_m=STEP_M,
+        meta=dict(dim=dim, N_ctrl=N_CTRL, M_prof=M_PROF,
+                  step_plane_m=STEP_PLANE_M, step_profile_m=STEP_PROFILE_M,
                   corridor_half_w=CORRIDOR_HALF_W, pop_size=POP_SIZE,
                   max_iter=MAX_ITER, wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
                   total_km=align["total_km"], Rmin_req=400,
+                  smoke=bool(args.smoke),
                   energy_unit="全生命周期元(亿元, 与C同口径)",
                   method="两阶段对照: 先平面(min平面LCC)后纵断面(双目标C+E熵权), 平面固定后串联; "
-                         "步长10m, 桥隧/成本/能耗口径同联合协同方案",
+                         f"平面步长{STEP_PLANE_M:.0f}m/纵断面步长{STEP_PROFILE_M:.0f}m, "
+                         "桥隧/成本/能耗口径同联合协同方案",
                   L_plane_existing_km=L0_plane / 1000.0,
                   L_plane_optimized_km=L_star / 1000.0,
                   Rmin_plane=float(R_star.min())),
@@ -144,9 +169,10 @@ def main():
         convergence_stage1=rP["curve"].tolist(),
         convergence_stage2=rC["curve"].tolist(),
     )
-    with open(os.path.join(RESULTS, "twostage_results.json"), "w", encoding="utf-8") as fp:
+    fn = "twostage_results_smoke.json" if args.smoke else "twostage_results.json"
+    with open(os.path.join(RESULTS, fn), "w", encoding="utf-8") as fp:
         json.dump(out, fp, ensure_ascii=False, indent=2)
-    print(f"[完成] twostage_results.json  总耗时 {time.time()-t0:.1f}s")
+    print(f"[完成] {fn}  总耗时 {(time.time()-t0)/60:.1f} min")
 
 
 if __name__ == "__main__":

@@ -5,10 +5,18 @@ run_ablation.py — 消融实验主程序 (实验设计方案2 · 实验一)
 流程:
   1. 加载北环高速轨迹, 生成纵断面优化上下文(数据.xlsx, 不可杜撰)
   2. 生成初始种群, 用熵权法(式5.3-5.4)客观确定权重, 构建同口径标量目标F
-  3. 5个变体(V1 JS基线 → V5 IJS完整) × 30次独立运行(pop=100, iter=500)
+  3. 5个变体(V1 JS基线 → V5 IJS完整) × 30次独立运行(pop=200, iter=500)
   4. 记录 F最优/均值/标准差、收敛代数、运行时间, 保存结果供出图出表
+
+用法:
+  python3 run_ablation.py            # 正式全量 (pop200/iter500/30次, ~1.1 h)
+  python3 run_ablation.py --smoke    # 冒烟测试 (iter=5, 3次, 验证管线)
+
+【为何本实验串行执行】表A2 把"平均运行时间(s)"作为结果列上报, 若跨进程并行,
+各变体的耗时会受内存带宽/缓存争用干扰而不再可比。本实验总耗时仅约 1.1 h,
+故坚持单进程串行, 保证 5 个变体的运行时间在同一条件下测得、可直接横向比较。
 """
-import os, json, time
+import os, json, time, argparse
 import numpy as np
 
 from params import ALGO
@@ -33,10 +41,18 @@ def convergence_gen(curve, frac=0.99):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--smoke", action="store_true",
+                    help="冒烟测试(iter=5, n_runs=3), 仅验证管线可跑通")
+    args = ap.parse_args()
+
     t_all = time.time()
-    pop_size = ALGO["pop_size"]      # 100
+    pop_size = ALGO["pop_size"]      # 200
     max_iter = ALGO["max_iter"]      # 500
     n_runs = ALGO["n_runs"]          # 30
+    if args.smoke:
+        max_iter, n_runs = 5, 3
+        print(f"[冒烟] max_iter={max_iter}, n_runs={n_runs}")
 
     # ---- 1. 数据与上下文 ----
     align = load_alignment()
@@ -102,13 +118,15 @@ def main():
         meta=dict(pop_size=pop_size, max_iter=max_iter, n_runs=n_runs,
                   dim=dim, total_km=align["total_km"],
                   wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
-                  CR=ALGO["CR"], levy_beta=ALGO["levy_beta"]),
+                  CR=ALGO["CR"], levy_beta=ALGO["levy_beta"],
+                  smoke=bool(args.smoke), execution="串行单进程(保证运行时间可比)"),
         variants=all_res,
         curves=curves,
     )
-    with open(os.path.join(RESULTS, "ablation_results.json"), "w", encoding="utf-8") as fp:
+    fn = "ablation_results_smoke.json" if args.smoke else "ablation_results.json"
+    with open(os.path.join(RESULTS, fn), "w", encoding="utf-8") as fp:
         json.dump(out, fp, ensure_ascii=False, indent=2)
-    print(f"[完成] 结果已保存 results/ablation_results.json  总耗时 {time.time()-t_all:.1f}s")
+    print(f"[完成] 结果已保存 results/{fn}  总耗时 {time.time()-t_all:.1f}s")
 
 
 if __name__ == "__main__":
