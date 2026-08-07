@@ -143,7 +143,8 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
         if record:
             curve.append(best_f)
 
-    return dict(best_x=best_x, best_f=best_f, curve=np.array(curve), nfe=nfe)
+    return dict(best_x=best_x, best_f=best_f, curve=np.array(curve), nfe=nfe,
+                pop=pop.copy(), cost=cost.copy())
 
 
 # 5个消融变体配置 (对应实验设计方案 表A1)

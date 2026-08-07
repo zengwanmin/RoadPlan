@@ -9,7 +9,7 @@ run_twostage.py — 两阶段(先平面, 后纵断面)优化【对照】程序
     第二阶段(纵断面): 在冻结的最优平面上, 只搜变坡点高程, 双目标 min C + min E,
         熵权法客观标量化 IJS 寻优。二者串联、非同一次寻优(区别于联合协同的同时寻优)。
 
-  求解桩号步长: 平面控制点 400 m、纵断面变坡点 10 m(见 objective_joint 的
+  求解桩号步长: 平面控制点 10 m、纵断面变坡点 10 m(用户指定; 见 objective_joint 的
   STEP_PLANE_M / STEP_PROFILE_M), 与联合协同优化完全一致, 保证两种方法在同一
   离散精度下可比。
   桥隧长度/单位造价、能耗口径、成本口径均与联合协同方案一致(共用 params.py/objective*.py),
@@ -63,7 +63,7 @@ def evaluate(x, pc):
 def make_existing_x(pc, dim):
     """现状方案 M-A: 平面 δ=0(实测中线) + 人工粗放纵断面(0.5km 平滑地面线)。
     与 run_joint.make_existing_x 完全同口径: 先在 10m 评价桩号上平滑, 再采样到
-    400m 变坡点上反解归一化决策量。"""
+    10m 变坡点上反解归一化决策量。"""
     x = np.full(dim, 0.5)
     d0 = decode_joint(x, pc)
     gz = d0["gz_new"]; sta = d0["sta"]; amp = pc["amp"]

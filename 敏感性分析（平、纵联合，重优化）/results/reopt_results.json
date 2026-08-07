@@ -15,7 +15,7 @@
     "kwh_base": 6.6993600934369,
     "smoke": false,
     "n_workers": 9,
-    "wall_time_min": 140.24
+    "wall_time_min": 141.91
   },
   "item1": {
     "traffic_rates": [

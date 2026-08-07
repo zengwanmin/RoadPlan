@@ -1,12 +1,12 @@
 ﻿Dimension,Metric,M-A (existing),M-B (cost-only),M-C (joint bi-objective),M-B→M-C change
-Economy,Life-cycle cost C (10^8 RMB),8.7351,8.4216,8.4363,+0.18%
-Economy,  Land acquisition CR (10^8),0.5046,0.4889,0.4875,-0.27%
-Economy,  Bridge/tunnel CB (10^8),8.0183,7.7688,7.7477,-0.27%
-Economy,  Basic construction CS (10^8),0.0516,0.0500,0.0499,-0.27%
-Economy,  Maintenance CQ (10^8),0.0162,0.0156,0.0156,-0.08%
-Economy,  Earthwork C_TU (10^8),0.1444,0.0983,0.1356,+37.98%
-Energy,Life-cycle traffic energy E (10^8 RMB),13.2408,12.7780,12.6185,-1.25%
-Energy,  Fuel-vehicle E_fuel (10^8),10.3886,10.0302,9.9132,-1.17%
-Energy,  Electric-vehicle E_ele (10^8),2.8522,2.7478,2.7053,-1.55%
-Efficiency,Length L (km),22.4456,21.7470,21.6880,-0.27%
-Safety,Slope hazard degree Q,2.7112,2.6300,2.6640,+1.29%
+Economy,Life-cycle cost C (10^8 RMB),8.6772,8.6003,8.6006,+0.00%
+Economy,  Land acquisition CR (10^8),0.5050,0.5050,0.5050,-0.00%
+Economy,  Bridge/tunnel CB (10^8),8.0245,8.0246,8.0246,-0.00%
+Economy,  Basic construction CS (10^8),0.0517,0.0517,0.0517,-0.00%
+Economy,  Maintenance CQ (10^8),0.0161,0.0161,0.0161,+0.00%
+Economy,  Earthwork C_TU (10^8),0.0799,0.0030,0.0034,+11.29%
+Energy,Life-cycle traffic energy E (10^8 RMB),13.2569,13.2075,13.2074,-0.00%
+Energy,  Fuel-vehicle E_fuel (10^8),10.4019,10.3698,10.3697,-0.00%
+Energy,  Electric-vehicle E_ele (10^8),2.8550,2.8377,2.8377,-0.00%
+Efficiency,Length L (km),22.4629,22.4631,22.4630,-0.00%
+Safety,Slope hazard degree Q,2.5927,2.5003,2.5003,+0.00%

@@ -22,6 +22,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
 
+from params import DESIGN_STD   # 表6.4 竖曲线半径(供图C3竖曲线平滑)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.path.join(HERE, "results", "joint_results.json")
 RES_TWO = os.path.join(HERE, "results", "twostage_results.json")  # 两阶段对照(run_twostage.py)
@@ -68,6 +70,47 @@ def _save(name):
         plt.savefig(os.path.join(FIG, f"{name}.{ext}"), bbox_inches="tight")
     plt.close()
     print(f"[图] {name}")
+
+
+def _vertical_curve_profile(sta, z, R_v=None, n_sub=6):
+    """在【分段线性设计纵断面】的每个变坡点处插入对称抛物线竖曲线, 返回加密后的
+    (s, z), 使纵断面在变坡点处平滑相切过渡(而非折线尖角)。仅用于绘图, 不改动优化。
+
+    竖曲线(式4.28-4.29 的形态): 对称二次抛物线。变坡点 i 入坡 i_in、出坡 i_out,
+    坡差 A=i_out-i_in, 竖曲线长度 L=R_v·|A|(R_v 取表6.4 最小竖曲线半径),
+    半长 L/2 再裁剪到不超过相邻两段各自的一半 —— 使相邻竖曲线在切点处正好衔接,
+    整条设计线 C1 连续。变坡点桩号 s_i、高程 z_i, 则:
+      BVC(竖曲线起点) 桩号 s_i-L/2、高程 z_i-i_in·L/2;
+      沿弧长 t∈[0,L]:  z(t) = z_BVC + i_in·t + (i_out-i_in)/(2L)·t²。
+    地面线不加竖曲线(属地形, 非设计线)。
+    """
+    sta = np.asarray(sta, float); z = np.asarray(z, float)
+    n = sta.size
+    if n < 3:
+        return sta, z
+    if R_v is None:
+        R_v = float(DESIGN_STD["Lv_min_m"])       # 最小竖曲线半径(表6.4)
+    seg = np.diff(sta)                             # 段长, n-1
+    g = np.diff(z) / np.where(seg > 0, seg, 1e-9)  # 各段纵坡, n-1
+    # 内部变坡点 i=1..n-2: 入坡 g[i-1]、出坡 g[i]; 竖曲线半长 h_i(裁剪防相邻重叠)
+    dA = np.abs(g[1:] - g[:-1])                    # |坡差|, 长度 n-2, 对应 sta[1:-1]
+    h = 0.5 * R_v * dA
+    h = np.minimum(h, 0.5 * seg[:-1])              # 不越过左段中点
+    h = np.minimum(h, 0.5 * seg[1:])               # 不越过右段中点
+    out_s = [sta[0]]; out_z = [z[0]]
+    for i in range(1, n - 1):
+        hi = h[i - 1]
+        if hi <= 1e-9:                             # 坡差≈0 或段太短: 直连该变坡点
+            out_s.append(sta[i]); out_z.append(z[i]); continue
+        g_in, g_out = g[i - 1], g[i]
+        s_bvc = sta[i] - hi; z_bvc = z[i] - g_in * hi
+        L = 2.0 * hi
+        t = np.linspace(0.0, L, n_sub + 1)
+        sc = s_bvc + t
+        zc = z_bvc + g_in * t + (g_out - g_in) / (2.0 * L) * t * t
+        out_s.extend(sc.tolist()); out_z.extend(zc.tolist())   # BVC 切点 -> 抛物线 -> EVC 切点
+    out_s.append(sta[-1]); out_z.append(z[-1])
+    return np.asarray(out_s), np.asarray(out_z)
 
 
 # ---- 表C1: 三模式四维指标 + M-B→M-C 变化率 ----
@@ -154,34 +197,22 @@ def table_C3(d):
 
 def _append_c3_budget_note():
     """
-    表C3 附注: 两阶段(Stage1+Stage2 各一次 IJS)在同一 pop=200/iter=500 下,
-    总求值次数(~600,400)是联合方案单次 IJS(~300,200)的约 2 倍, 故表中"两阶段
-    全面优于联合"的差距部分来自求解预算不对等, 非纯方法差异。
-    补测(/tmp/fair_budget.py, /tmp/fair_twostage.py, 2026-08-06)按总求值量对齐:
-      等预算(联合iter=1000 ≈ 两阶段iter=500的总求值量): C/E/L 差距收窄到 <0.3%,
-        联合 Rmin=1295m 明显优于两阶段 554m。
-      2×预算(联合iter=2000 vs 两阶段每阶段iter=1000, 双方总求值量再对齐):
-        两阶段反而拉开优势(C/E/L 领先联合 0.9-1.1%), 但两阶段 Rmin 随预算增加
-        从554m降到452m(其平面阶段只要求 R>=400m 可行, 预算越多越贴着约束边界走);
-        联合的 Rmin 随预算增加反而从869m升到1311m(平面与成本/能耗联合寻优,
-        不会单纯逼近约束边界)。
-    结论: 两阶段更省成本, 联合几何富余度更高, 该权衡在等预算下依然存在,
-    不是预算不对等的假象; 但本表仍按 pop=200/iter=500(用户指定参数)呈现,
-    未改动官方口径。详见 运行记录与问题定位.md §六。
+    表C3 附注(求解预算说明): 本表联合方案按 iter=1000 求解、两阶段按每阶段 iter=500
+    求解, 二者【总求值量已对齐】(均 ≈ 600,000), 故为等求值预算下的直接对比:
+      联合  : 单次 IJS,            200 + 3·200·1000 ≈ 600,200
+      两阶段: Stage1+Stage2 各一次 IJS, 2·(200 + 3·200·500) ≈ 600,400
+    不再存在旧口径(联合 iter=500, ~300,200)相对两阶段少算约 2 倍求值的问题。
+    C/E/L/Rmin 的具体数值以本轮重跑结果为准。详见 运行记录与问题定位.md §六。
     """
     fn = os.path.join(TAB, "表C3_现状_两阶段_联合协同_三方案对比表.md")
     note = (
-        "\n> **附注(预算公平性)**: 两阶段(Stage1+Stage2 两次 IJS)总求值量"
-        "(~600,400)约为联合方案(单次 IJS, ~300,200)的 2 倍; 补测显示按总求值量"
-        "对齐后, 等预算下两者 C/E/L 差距 <0.3%(联合 Rmin=1295m 明显优于两阶段"
-        "554m), 2×预算下两阶段反超联合 0.9-1.1%但 Rmin 降至 452m(逼近约束边界)、"
-        "联合 Rmin 升至 1311m。即: 两阶段更省成本, 联合几何富余度更高, 二者的"
-        "权衡在等预算下依然存在。本表仍按 pop=200/iter=500(用户指定参数)呈现。"
-        "详见 运行记录与问题定位.md §六。\n"
+        "\n> **附注(求解预算)**: 本表联合方案按 iter=1000、两阶段按每阶段 iter=500 "
+        "求解, 总求值量已对齐(联合 ≈200+3·200·1000=600,200; 两阶段 "
+        "≈2·(200+3·200·500)=600,400), 即两种方法在【等求值预算】下直接对比。\n"
     )
     with open(fn, "a", encoding="utf-8") as f:
         f.write(note)
-    print("[表C3] 已附加预算公平性说明")
+    print("[表C3] 已附加求解预算说明")
 
 
 # ---- 图C1: Pareto 解集 + 熵权决策点 ----
@@ -225,15 +256,20 @@ def fig_C2(d):
     _save("图C2_平面线形对比")
 
 
-# ---- 图C3: 纵断面线形 现状 vs 优化 (同一张图) ----
+# ---- 图C3: 纵断面线形 现状 vs 优化 (同一张图, 设计线含竖曲线平滑) ----
 def fig_C3(d):
     A, C = d["M_A"], d["M_C"]
-    sa = np.array(A["sta"]) / 1000.0; gA = np.array(A["gz_new"]); zA = np.array(A["design_z"])
-    sc = np.array(C["sta"]) / 1000.0; zC = np.array(C["design_z"])
+    sa = np.array(A["sta"]) / 1000.0; gA = np.array(A["gz_new"])
+    # 设计纵断面在变坡点处加竖曲线(对称抛物线)平滑; 地面线保持实测原样。
+    # 竖曲线在原始里程(m)上构造后再转 km 绘图, 使变坡点处相切、无折线尖角。
+    saV, zAv = _vertical_curve_profile(np.array(A["sta"]), np.array(A["design_z"]))
+    scV, zCv = _vertical_curve_profile(np.array(C["sta"]), np.array(C["design_z"]))
     plt.figure(figsize=(9.2, 4.8))
     plt.plot(sa, gA, color="#bbbbbb", lw=1.0, ls=":", label="Ground line (measured)")
-    plt.plot(sa, zA, color="#333333", lw=1.5, label="M-A existing profile")
-    plt.plot(sc, zC, color="#c44e52", lw=1.9, label="M-C joint-optimized profile")
+    plt.plot(saV / 1000.0, zAv, color="#333333", lw=1.5,
+             label="M-A existing profile (with vertical curves)")
+    plt.plot(scV / 1000.0, zCv, color="#c44e52", lw=1.9,
+             label="M-C joint-optimized profile (with vertical curves)")
     plt.xlabel("Chainage (km)"); plt.ylabel("Elevation (m)")
     plt.title("Fig. C3  Longitudinal profile: existing (M-A) vs joint-optimized (M-C)")
     plt.legend(frameon=False); plt.grid(alpha=0.3)
