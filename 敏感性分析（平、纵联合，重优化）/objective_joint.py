@@ -73,11 +73,13 @@ from objective import (earthwork_cost, lcc_ping, fuel_energy, ev_energy,
 from data_loader import load_alignment
 
 CORRIDOR_HALF_W = 800.0     # 走廊带半宽(m), 与 GapB 一致
-STEP_CTRL_M = 400.0         # 【决策变量】间距(m): 平面控制点 与 纵断面变坡点 同为 400 m
+STEP_PLANE_CTRL_M = 150.0   # 平面决策变量间距(m): 受R≥400m约束, ≥150m贴地才可行
+STEP_PROFILE_CTRL_M = 100.0 # 纵断面决策变量间距(m): 变坡点步长, 与消融实验同口径
 STEP_EVAL_M = 10.0          # 【目标函数评价】桩号间距(m): 土方/能耗/约束均按 10 m 积分
 # 兼容旧名(部分脚本/文档以此指代)
-STEP_PLANE_M = STEP_CTRL_M
-STEP_PROFILE_M = STEP_CTRL_M
+STEP_PLANE_M = STEP_PLANE_CTRL_M
+STEP_PROFILE_M = STEP_PROFILE_CTRL_M
+STEP_CTRL_M = STEP_PLANE_CTRL_M  # 向后兼容
 
 
 def _n_stations(step_m):
@@ -86,9 +88,9 @@ def _n_stations(step_m):
     s = np.concatenate([[0], np.cumsum(np.hypot(np.diff(a["X"]), np.diff(a["Y"])))])
     return int(np.floor(s[-1] / step_m)) + 1
 
-N_CTRL = _n_stations(STEP_CTRL_M)   # 平面控制点个数(每 400 m 一个) -> 决定 (x, y)
-M_PROF = _n_stations(STEP_CTRL_M)   # 纵断面变坡点个数(每 400 m 一个) -> 决定 z
-M_EVAL = _n_stations(STEP_EVAL_M)   # 目标函数评价桩号个数(每 10 m 一个), 非决策变量
+N_CTRL = _n_stations(STEP_PLANE_CTRL_M)   # 平面控制点个数 -> 决定 (x,y)
+M_PROF = _n_stations(STEP_PROFILE_CTRL_M) # 纵断面变坡点个数 -> 决定 z
+M_EVAL = _n_stations(STEP_EVAL_M)         # 目标函数评价桩号个数(每 10 m 一个), 非决策变量
 
 
 def make_plane_context(align):

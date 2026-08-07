@@ -10,28 +10,28 @@ objective_joint.py — 平纵断面【联合】优化目标 (方案B: 真正的�
   坐标, 纵断面由每个桩号的高程 z 决定; 二者放入【同一决策向量】, 在同一次 IJS 寻优
   中对 (x, y, z) 三维立体线形一起搜索。
 
-【决策变量的离散尺度 vs 目标函数的评价尺度】
-  · 决策变量都取 10 m 一个(STEP_CTRL_M, 用户指定):
-      平面 N_CTRL=2247 个控制点(法向偏移 δ) + 纵断面 M_PROF=2247 个【变坡点】高程。
+【决策变量的离散尺度 vs 目标函数的评价尺度(二者分开)】
+  · 平面决策变量 150 m 一个(STEP_PLANE_CTRL_M, 约束 R≥400m 下最小可行步长):
+      N_CTRL=150 个控制点(法向偏移 δ)
+  · 纵断面决策变量 100 m 一个(STEP_PROFILE_CTRL_M, 与消融实验同口径):
+      M_PROF=225 个变坡点高程
   · 目标函数一律在 10 m 桩号上积分(STEP_EVAL_M): M_EVAL=2247 个评价桩号,
-      土方(式4.3)、能耗(式4.4-4.18)、纵坡/坡差约束、边坡危险度全部按 10 m 计。
-      本配置下【决策步长 = 评价步长】, 平面走向与纵断面坡度都在最细分辨率上直接寻优。
+      土方(式4.3)、能耗(式4.4-4.18)、纵坡/坡差约束、边坡危险度全部按 10 m 计,
+      评价精度不受决策维度下降的影响。变坡点高程线性插值到评价桩号, 故变坡点之间
+      为等坡段、坡度只在变坡点处改变 —— 与真实纵断面设计一致。
 
-  【取 10 m 决策步长的已知代价(须知; 详见 运行记录与问题定位.md §3.3-3.4)】
-   (a) 平面: 受平曲线最小半径 R ≥ 400 m(表3.2 极限值)约束, 相邻控制点的横向错动 A
-       在波长 λ=2Δs 上产生的曲率半径为 R = λ²/(4π²A), 即 Δs 越小、可行的 A 越小:
-       Δs=10 m 时 A ≤ 2.5 cm(Δs=400 m 时可达 40 cm)。故 ±800 m 走廊带在 10 m 步长下
-       几乎全域不可行(实测中线自身在 10 m 控制点下 Rmin 仅 53.5 m, 系拟合 GPS 噪声),
-       初始种群线形长度可达 1084 km, 平面搜索易退化为整体平移。
-   (b) 算法: 2247 个平面维与 2247 个纵断面维放入同一决策向量(dim=4494), IJS 每次
-       移动同时扰动全部维度并按整体贪婪接受, "改善平面但恶化纵断面"的候选会被拒绝,
-       而纵断面在贴地附近已接近最优、任何随机扰动都使其变差, 平面易被淹没、难有进展。
-   取 400 m 决策步长(dim=114)可规避上述两点(平面立即起作用、约束惩罚近乎为零);
-   本文件保留该口径的实现路径, 当前按用户要求统一取 10 m。
+  为何平面取 150 m(不能取 10 m): 平面受平曲线最小半径 R ≥ 400 m(表3.2 极限值)
+  约束, 相邻控制点的横向错动 A 在波长 λ=2Δs 上产生的曲率半径为 R = λ²/(4π²A), 即
+  Δs 越小、可行的 A 越小: Δs=10 m 时 A ≤ 2.5 cm(实测中线自身在 10 m 控制点下 Rmin
+  仅 53.5 m, 系拟合 GPS 噪声); Δs≥150 m 时贴地方案 Rmin≈422 m, 约束才可满足。
 
-决策向量 x ∈ [0,1]^(N_CTRL + M_PROF) = [0,1]^4494:
-  x[:N_CTRL]  -> 平面 N_CTRL=2247 个控制点法向偏移 δ_k ∈ [-W, W](走廊带半宽 W) -> (x,y)
-  x[N_CTRL:]  -> 沿【新平面线位】等分的 M_PROF=2247 个变坡点高程 z 调整
+  为何纵断面取 100 m(与消融实验同口径): 与消融实验/多算法对比的纵断面搜索空间一致,
+  保证跨实验的数值口径可比; 平面维(N_CTRL=150)与纵断面维(M_PROF=225)同数量级,
+  不会被淹没。
+
+决策向量 x ∈ [0,1]^(N_CTRL + M_PROF) = [0,1]^375:
+  x[:N_CTRL]  -> 平面 N_CTRL=150 个控制点法向偏移 δ_k ∈ [-W, W](走廊带半宽 W) -> (x,y)
+  x[N_CTRL:]  -> 沿【新平面线位】等分的 M_PROF=225 个变坡点高程 z 调整
 
 公式全部沿用林坤锐学位论文(见 objective.py 式号), 模型公式不变:
   平面里程/坐标 式3.1-3.4; 平曲线最小半径 表3.2(≥400m);
@@ -65,11 +65,13 @@ from objective import (earthwork_cost, lcc_ping, fuel_energy, ev_energy,
 from data_loader import load_alignment
 
 CORRIDOR_HALF_W = 800.0     # 走廊带半宽(m), 与 GapB 一致
-STEP_CTRL_M = 10.0          # 【决策变量】间距(m): 平面控制点 与 纵断面变坡点 同为 10 m(用户指定)
+STEP_PLANE_CTRL_M = 150.0   # 平面决策变量间距(m): 受R≥400m约束, ≥150m贴地才可行
+STEP_PROFILE_CTRL_M = 100.0 # 纵断面决策变量间距(m): 变坡点步长, 与消融实验同口径
 STEP_EVAL_M = 10.0          # 【目标函数评价】桩号间距(m): 土方/能耗/约束均按 10 m 积分
 # 兼容旧名(部分脚本/文档以此指代)
-STEP_PLANE_M = STEP_CTRL_M
-STEP_PROFILE_M = STEP_CTRL_M
+STEP_PLANE_M = STEP_PLANE_CTRL_M
+STEP_PROFILE_M = STEP_PROFILE_CTRL_M
+STEP_CTRL_M = STEP_PLANE_CTRL_M  # 向后兼容
 
 
 def _n_stations(step_m):
@@ -78,9 +80,9 @@ def _n_stations(step_m):
     s = np.concatenate([[0], np.cumsum(np.hypot(np.diff(a["X"]), np.diff(a["Y"])))])
     return int(np.floor(s[-1] / step_m)) + 1
 
-N_CTRL = _n_stations(STEP_CTRL_M)   # 平面控制点个数(每 10 m 一个) -> 决定 (x, y)
-M_PROF = _n_stations(STEP_CTRL_M)   # 纵断面变坡点个数(每 10 m 一个) -> 决定 z
-M_EVAL = _n_stations(STEP_EVAL_M)   # 目标函数评价桩号个数(每 10 m 一个), 非决策变量
+N_CTRL = _n_stations(STEP_PLANE_CTRL_M)   # 平面控制点个数 -> 决定 (x,y)
+M_PROF = _n_stations(STEP_PROFILE_CTRL_M) # 纵断面变坡点个数 -> 决定 z
+M_EVAL = _n_stations(STEP_EVAL_M)         # 目标函数评价桩号个数(每 10 m 一个), 非决策变量
 
 
 def make_plane_context(align):
