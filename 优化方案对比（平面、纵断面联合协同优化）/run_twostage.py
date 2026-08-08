@@ -30,13 +30,13 @@ run_twostage.py — 两阶段(先平面, 后纵断面)优化【对照】程序
 import os, json, time, argparse
 import numpy as np
 
-from params import ALGO
+from params import ALGO, LONG_STD_100
 from data_loader import load_alignment
 from algorithms import run, VARIANTS
 from objective import entropy_weights
 from objective_joint import (make_plane_context, objectives_joint, decode_joint,
                              make_scalar_plane, build_plane_from_delta, plane_lcc,
-                             N_CTRL, M_PROF, CORRIDOR_HALF_W,
+                             N_CTRL, M_PROF, M_PROF_VAR, CORRIDOR_HALF_W,
                              STEP_PLANE_M, STEP_PROFILE_M)
 from safety import hazard_profile
 
@@ -66,15 +66,16 @@ def make_existing_x(pc, dim):
     10m 变坡点上反解归一化决策量。"""
     x = np.full(dim, 0.5)
     d0 = decode_joint(x, pc)
-    gz = d0["gz_new"]; sta = d0["sta"]; amp = pc["amp"]
+    gz = d0["gz_new"]; sta = d0["sta"]
     step = np.median(np.diff(sta))
     win = max(int(round(500.0 / step)), 3)
     if win % 2 == 0:
         win += 1
     design_A = np.convolve(gz, np.ones(win) / win, mode="same")
     design_A_ctrl = np.interp(d0["sta_ctrl"], sta, design_A)
+    grades_A = np.diff(design_A_ctrl) / np.diff(d0["sta_ctrl"])
     x[N_CTRL:] = np.clip(
-        0.5 + (design_A_ctrl - d0["gz_ctrl"]) / (2.0 * amp), 0.0, 1.0)
+        0.5 * (grades_A / LONG_STD_100["grade_max"] + 1.0), 0.0, 1.0)
     return x
 
 
@@ -90,10 +91,10 @@ def main():
     t0 = time.time()
     align = load_alignment()
     pc = make_plane_context(align)
-    dim = N_CTRL + M_PROF
+    dim = N_CTRL + M_PROF_VAR
     print(f"[数据] 北环高速 {align['total_km']:.3f} km")
     print(f"[两阶段对照] dim={dim} (平面{N_CTRL}@{STEP_PLANE_M:.0f}m + "
-          f"纵断面{M_PROF}@{STEP_PROFILE_M:.0f}m), "
+          f"纵断面纵坡{M_PROF_VAR}@{STEP_PROFILE_M:.0f}m), "
           f"走廊带±{CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}")
 
     # ---------- M-A 现状方案 ----------
@@ -117,7 +118,7 @@ def main():
           f"(现状 {L0_plane/1000:.3f}km)")
 
     # M-S1: 最优平面 + 贴地纵断面
-    x_S1 = np.concatenate([delta_star, np.full(M_PROF, 0.5)])
+    x_S1 = np.concatenate([delta_star, np.full(M_PROF_VAR, 0.5)])
     res_S1 = evaluate(x_S1, pc)
     print(f"[M-S1] C={res_S1['C']/1e8:.4f}亿 E={res_S1['E']/1e8:.4f}亿 L={res_S1['L_km']:.3f}km")
 
@@ -127,14 +128,14 @@ def main():
     def full_x(prof_norm):
         return np.concatenate([delta_star, prof_norm])
 
-    baseP = rng.random((POP_SIZE, M_PROF))
+    baseP = rng.random((POP_SIZE, M_PROF_VAR))
     C0 = np.array([objectives_joint(full_x(baseP[i]), pc)[0] for i in range(POP_SIZE)])
     E0 = np.array([objectives_joint(full_x(baseP[i]), pc)[1] for i in range(POP_SIZE)])
     wC, wE = entropy_weights(C0, E0)
     C_ref, E_ref = float(C0.mean()), float(E0.mean())
     print(f"[熵权法] wC={wC:.4f}, wE={wE:.4f}")
 
-    lb2, ub2 = np.zeros(M_PROF), np.ones(M_PROF)
+    lb2, ub2 = np.zeros(M_PROF_VAR), np.ones(M_PROF_VAR)
     pop2 = baseP.copy()
 
     def scalar_prof(prof_norm):
@@ -151,7 +152,7 @@ def main():
     print(f"[里程] 现状 {res_A['L_km']:.3f}km -> 两阶段 {res_C['L_km']:.3f}km 缩短 {reduce_pct:.2f}%")
 
     out = dict(
-        meta=dict(dim=dim, N_ctrl=N_CTRL, M_prof=M_PROF,
+        meta=dict(dim=dim, N_ctrl=N_CTRL, M_prof=M_PROF, M_prof_var=M_PROF_VAR,
                   step_plane_m=STEP_PLANE_M, step_profile_m=STEP_PROFILE_M,
                   corridor_half_w=CORRIDOR_HALF_W, pop_size=POP_SIZE,
                   max_iter=MAX_ITER, wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,

@@ -25,15 +25,18 @@ from params import (FUEL_CAR, EV, PHYS, TRAFFIC, ENERGY_PRICE, COST_UNIT,
 # =============================================================
 def decode(x, sta, gz):
     """
-    将[0,1]决策向量解码为各变坡点设计高程。
-    变量维度 = 变坡点个数(等于重采样桩号数)。
-    设计高程 = 地面高程 ± 允许调整幅度, 幅度取 ±[地面起伏范围] 内。
+    将[0,1]决策向量解码为各桩号设计高程。
+    决策变量 = 逐段纵坡 i_k, 维度 = 桩号数 - 1:
+        i_k = (2*x_k - 1) * grade_max      坡度限值成为箱约束, 按构造满足
+        z_0 = gz[0], z_N = gz[-1]          起终点均与既有路衔接, 高程固定
+        z_j = z_0 + Σ_{k<j} i_k * Δsta_k   式4.19 的累加形式, 再线性校正使终点闭合
+    高程由纵坡累加得到, 改动任一纵坡会平移其下游全部高程。
     """
-    z_min, z_max = gz.min(), gz.max()
-    span = (z_max - z_min)
-    amp = max(span * 0.6, 10.0)          # 允许高程调整幅度(m)
-    design_z = gz + (x - 0.5) * 2.0 * amp  # x=0.5 -> 贴合地面
-    return design_z
+    grades = (np.asarray(x, float) * 2.0 - 1.0) * LONG_STD_100["grade_max"]
+    z = np.concatenate(([gz[0]], gz[0] + np.cumsum(grades * np.diff(sta))))
+    # 终点闭合: 扣除一个常量坡度使 z[-1] 落回地面高程(起终点均与既有路衔接)。
+    # 不闭合时纵坡序列是自由随机游走, 终点误差可达 105 m(地面线自身仅起伏 70 m)。
+    return z - (z[-1] - gz[-1]) * (sta - sta[0]) / (sta[-1] - sta[0])
 
 
 def _grades(sta, z):
@@ -246,6 +249,8 @@ def objectives(x, ctx):
     # 坡度约束 imin<=|i|<=imax (式4.27): 超限惩罚
     over = np.abs(grades) - gmax
     pen += np.sum(np.where(over > 0, over, 0.0)) * 1e9
+    short = gmin - np.abs(grades)               # 最小纵坡(排水)约束
+    pen += np.sum(np.where(short > 0, short, 0.0)) * 1e9
     # 相邻坡度代数差过大(竖曲线约束 式4.28 近似): 限制变坡率
     dgrade = np.abs(np.diff(grades))
     pen += np.sum(np.where(dgrade > 0.03, dgrade - 0.03, 0.0)) * 5e8

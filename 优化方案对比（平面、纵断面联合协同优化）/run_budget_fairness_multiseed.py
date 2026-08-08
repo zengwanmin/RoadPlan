@@ -59,7 +59,7 @@ def two_stage_once(seed_i, iters):
     rC = run(sc, np.zeros(M_PROF), np.ones(M_PROF), baseP.copy(), iters,
              SEED_BASE + 30000 + seed_i, **VARIANTS["V5_IJS"])
     C, E, pen, info = objectives_joint(full(rC["best_x"]), pc)
-    nev = 2 * (POP + 3 * POP * iters)
+    nev = 2 * (2 * POP + 3 * POP * iters)   # 含 Tent 初始化的 POP 次评价
     return dict(C=float(C), E=float(E), L_km=float(info["L_km"]),
                 Rmin=float(info["Rmin"]), pen=float(pen), nev=int(nev))
 
@@ -79,7 +79,7 @@ def joint_once(seed_i, iters):
     r = run(f, np.zeros(dim), np.ones(dim), base, iters,
             SEED_BASE + 40000 + seed_i, **VARIANTS["V5_IJS"])
     C, E, pen, info = objectives_joint(r["best_x"], pc)
-    nev = POP + 3 * POP * iters
+    nev = 2 * POP + 3 * POP * iters        # 含 Tent 初始化的 POP 次评价
     return dict(C=float(C), E=float(E), L_km=float(info["L_km"]),
                 Rmin=float(info["Rmin"]), pen=float(pen), nev=int(nev))
 

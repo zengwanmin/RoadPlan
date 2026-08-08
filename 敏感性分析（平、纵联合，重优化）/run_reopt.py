@@ -28,7 +28,7 @@ from params import ALGO, TRAFFIC, LCC
 from data_loader import load_alignment
 from algorithms import run, VARIANTS
 from objective import entropy_weights
-from objective_joint import make_plane_context, N_CTRL, M_PROF
+from objective_joint import make_plane_context, N_CTRL, M_PROF, M_PROF_VAR
 from objective_reopt import objectives_reopt, make_scalar_reopt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -42,7 +42,7 @@ SEED_BASE = 20250722   # 复现用固定种子基数
 
 # --- worker 进程内的全局(由 initializer 设定, 兼容 macOS spawn) ---
 _PC = None
-_DIM = N_CTRL + M_PROF
+_DIM = N_CTRL + M_PROF_VAR
 _LB = np.zeros(_DIM); _UB = np.ones(_DIM)
 POP_SIZE = ALGO["pop_size"]      # 主进程默认; worker 由 initargs 覆盖
 MAX_ITER = ALGO["max_iter"]
@@ -62,7 +62,7 @@ def _base_pop(seed):
     rng = np.random.default_rng(seed)
     base = np.empty((POP_SIZE, _DIM))
     base[:, :N_CTRL] = 0.5 + (rng.random((POP_SIZE, N_CTRL)) - 0.5) * 1.0
-    base[:, N_CTRL:] = rng.random((POP_SIZE, M_PROF))
+    base[:, N_CTRL:] = rng.random((POP_SIZE, M_PROF_VAR))
     return np.clip(base, 0, 1)
 
 
@@ -158,7 +158,7 @@ def main():
     t_all = time.time()
     align = load_alignment()
     print(f"[数据] 北环高速 {align['total_km']:.3f} km  dim={_DIM} "
-          f"(平面{N_CTRL}+纵断面{M_PROF})  pop={POP_SIZE} iter={MAX_ITER}")
+          f"(平面{N_CTRL}+纵断面纵坡{M_PROF_VAR})  pop={POP_SIZE} iter={MAX_ITER}")
 
     if args.smoke:
         MAX_ITER = 5

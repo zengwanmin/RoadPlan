@@ -29,6 +29,21 @@ RESULTS = os.path.join(HERE, "results")
 os.makedirs(RESULTS, exist_ok=True)
 
 
+def iters_for_nfe(target_nfe, pop, use_tent=False, use_levy=False, use_de=False):
+    """按目标评价次数反解迭代数。
+    nfe = pop*(1+tent) + pop*iter*(1+levy+de)
+    Tent 初始化多一轮 pop 次评价; Levy、DE 各在主循环内多一段 pop 次评价。
+    若五个变体取同一 iter, V5 的实际评价次数是 V1 的 3 倍, F 值不可横向比较。"""
+    init = pop * (1 + int(use_tent))
+    per = pop * (1 + int(use_levy) + int(use_de))
+    return max(1, int(round((target_nfe - init) / per)))
+
+
+def nfe_of(iters, pop, use_tent=False, use_levy=False, use_de=False):
+    return (pop * (1 + int(use_tent))
+            + pop * int(round(iters)) * (1 + int(use_levy) + int(use_de)))
+
+
 def convergence_gen(curve, frac=0.99):
     """达到最优解 99% 所需迭代次数(实验设计方案 §2.3)。
     对最小化问题: 从初值 f0 收敛到终值 f*, 达到 f0-0.99*(f0-f*) 的代数。"""
@@ -58,9 +73,10 @@ def main():
     align = load_alignment()
     sta, gz = resample_profile(align, step_m=100.0)
     ctx = dict(sta=sta, gz=gz, total_len_m=align["s"][-1])
-    dim = len(sta)
+    dim = len(sta) - 1          # 决策变量 = 逐段纵坡, 个数 = 桩号数-1
     lb, ub = np.zeros(dim), np.ones(dim)
-    print(f"[数据] 北环高速 {align['total_km']:.3f} km, 变坡点/桩号 dim={dim}")
+    print(f"[数据] 北环高速 {align['total_km']:.3f} km, "
+          f"桩号 {len(sta)} 个, 纵坡决策维度 dim={dim}")
 
     # ---- 2. 熵权法权重(用固定基准种群客观确定, 全实验统一口径) ----
     base_rng = np.random.default_rng(2025)
@@ -71,11 +87,19 @@ def main():
     C_ref, E_ref = float(C0.mean()), float(E0.mean())
     print(f"[熵权法] wC={wC:.4f}, wE={wE:.4f}; C_ref={C_ref/1e8:.3f}亿, E_ref={E_ref:.0f}")
 
-    # ---- 3. 5变体 × 30次独立运行 ----
+    # ---- 3. 5变体 × 30次独立运行(统一评价次数预算) ----
+    # 以完整 IJS(V5) 在 max_iter 代下的评价次数为统一预算, 其余变体按 nfe 反解迭代数。
+    target_nfe = nfe_of(max_iter, pop_size, True, True, True)
+    iters = {v: iters_for_nfe(target_nfe, pop_size, **c) for v, c in VARIANTS.items()}
+    print(f"[预算] 目标 nfe={target_nfe:,}; 各变体迭代数 "
+          + ", ".join(f"{v}={iters[v]}({nfe_of(iters[v], pop_size, **VARIANTS[v]):,})"
+                      for v in VARIANTS))
+
     all_res = {}
     curves = {}     # 每变体保存一条代表性收敛曲线(取中位run)
     for vname, cfg in VARIANTS.items():
         tv = time.time()
+        it_v = iters[vname]
         best_fs, conv_gens, runtimes = [], [], []
         run_curves = []
         best_x_overall, best_f_overall = None, np.inf
@@ -85,7 +109,7 @@ def main():
             pop0 = rng.random((pop_size, dim))
             f = make_scalar_fn(ctx, wC, wE, C_ref, E_ref)
             t0 = time.time()
-            res = run(f, lb, ub, pop0, max_iter=max_iter, seed=1000 + r, **cfg)
+            res = run(f, lb, ub, pop0, max_iter=it_v, seed=1000 + r, **cfg)
             rt = time.time() - t0
             best_fs.append(res["best_f"])
             conv_gens.append(convergence_gen(res["curve"]))
@@ -103,19 +127,25 @@ def main():
             best=float(best_fs.min()), mean=float(best_fs.mean()),
             std=float(best_fs.std()), median=float(np.median(best_fs)),
             conv_gen_mean=float(np.mean(conv_gens)),
+            conv_nfe_mean=float(nfe_of(np.mean(conv_gens), pop_size, **cfg)),
+            max_iter=it_v, nfe=nfe_of(it_v, pop_size, **cfg),
             runtime_mean=float(np.mean(runtimes)),
             best_fs=best_fs.tolist(),
             conv_gens=list(map(int, conv_gens)),
             runtimes=list(map(float, runtimes)),
             best_C=float(Cb), best_E=float(Eb), best_pen=float(penb),
         )
-        print(f"[{vname}] best={best_fs.min():.4f} mean={best_fs.mean():.4f} "
-              f"std={best_fs.std():.4f} conv={np.mean(conv_gens):.1f} "
+        print(f"[{vname}] iter={it_v} nfe={nfe_of(it_v, pop_size, **cfg):,} "
+              f"best={best_fs.min():.4f} mean={best_fs.mean():.4f} "
+              f"std={best_fs.std():.4f} conv={np.mean(conv_gens):.1f}代/"
+              f"{nfe_of(np.mean(conv_gens), pop_size, **cfg):,.0f}次 "
               f"t={np.mean(runtimes):.2f}s  (变体耗时 {time.time()-tv:.1f}s)")
 
     # ---- 4. 保存 ----
     out = dict(
         meta=dict(pop_size=pop_size, max_iter=max_iter, n_runs=n_runs,
+                  target_nfe=target_nfe, iters=dict(iters),
+                  budget="按 nfe 对齐(以完整 IJS 的 max_iter 代为基准)",
                   dim=dim, total_km=align["total_km"],
                   wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
                   CR=ALGO["CR"], levy_beta=ALGO["levy_beta"],

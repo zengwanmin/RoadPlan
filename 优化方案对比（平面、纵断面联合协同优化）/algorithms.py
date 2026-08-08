@@ -18,6 +18,9 @@ import math
 import numpy as np
 
 
+TENT_RESET = 32      # Tent 序列重置周期(必须 < 53, 见 run() 内注释)
+
+
 def _simplebounds(s, lb, ub):
     """边界回弹(式59 / IJS.m simplebounds): 越界反射回相反边界。"""
     s = np.array(s, float)
@@ -51,7 +54,7 @@ def _tent_init(x0, lb, ub, mu, rng):
 def run(fobj, lb, ub, pop0, max_iter, seed,
         use_tent=False, use_levy=False, use_de=False,
         CR=0.5, levy_beta=1.5, mu_tent=2.0, beta_d=3.0, C0=0.5,
-        record=True):
+        levy_scale=0.02, levy_frac=0.1, record=True):
     """
     JS/IJS主循环。返回 dict(best_x, best_f, curve, nfe)。
       fobj    : 标量目标 f(x)->float (越小越优)
@@ -66,9 +69,14 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
     nfe = nPop
 
     # ---- Tent 混沌映射初始化 (式47): 生成混沌序列择优替换 ----
+    # mu=2 的帐篷映射等价于二进制倍角映射, 每迭代消耗一位尾数; float64 只有 53 位,
+    # 故连续迭代到第 53 次时序列精确归零并被 0 吸收, 此后候选解恒为下界 lb。
+    # 每 TENT_RESET(<53) 次用新随机数重置初值, 使全部 nPop 个候选都落在混沌段内。
     if use_tent:
         r0 = rng.random(dim)
         for i in range(nPop):
+            if i % TENT_RESET == 0 and i > 0:
+                r0 = rng.random(dim)
             p1 = r0 >= 0.5
             r0 = np.where(p1, mu_tent * (1 - r0), mu_tent * r0)
             r0 = np.clip(r0, 0, 1)
@@ -114,9 +122,17 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
                     best_cost = fnew; best_sol = newsol.copy()
 
         # ---- Levy 飞行 (式54-55) + 贪婪选择 ----
+        # 原式的 |levy| 中位数约 0.63, 与决策箱边长同量级(33% 的分量超出整个箱体),
+        # 且一次扰动全部 dim 维再整体贪婪接受, 在需要线形平顺的问题上接受率近 0。
+        # 故按箱体边长缩放步长(levy_scale), 并每次只扰动 levy_frac 比例的随机维度。
         if use_levy:
+            k = max(1, int(round(levy_frac * dim)))
+            span = ub - lb
             for i in range(nPop):
-                cand = pop[i] + rng.random(dim) * _levy(dim, levy_beta, rng)
+                idx = rng.choice(dim, size=k, replace=False)
+                cand = pop[i].copy()
+                cand[idx] += (levy_scale * span[idx] * rng.random(k)
+                              * _levy(k, levy_beta, rng))
                 cand = _simplebounds(cand, lb, ub)
                 fc = fobj(cand); nfe += 1
                 if fc < cost[i]:
@@ -130,7 +146,7 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
                 r1, r2 = rng.integers(nPop), rng.integers(nPop)
                 mutant = pop[i] + rng.random(dim) * (pop[r1] - pop[r2])   # 变异(式56)
                 mask = rng.random(dim) < CR                                # 交叉(式57)
-                cand = np.where(mask, pop[i], mutant)
+                cand = np.where(mask, mutant, pop[i])   # CR = 取变异体的概率
                 cand = _simplebounds(cand, lb, ub)
                 fc = fobj(cand); nfe += 1
                 if fc < cost[i]:                                           # 选择(式58)

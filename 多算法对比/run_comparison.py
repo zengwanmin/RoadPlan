@@ -62,6 +62,31 @@ SCALES = {
 }
 ALGOS = ["IJS", "JS", "NSGA-II", "GA", "PSO", "GWO"]
 
+# 各算法每代的目标函数评价次数系数, 以及初始化阶段的额外评价次数(以 pop 为单位):
+#   nfe = pop*init_mult + pop*iter*per_gen
+# IJS 因含 Tent 初始化(+1 pop)与 Levy、DE 两段内循环(每代 3 pop), 若与其它算法
+# 取同一 iter, 实际评价次数是它们的 3 倍。表 B1/B2 按 F 值横向比较, 必须对齐 nfe。
+NFE_COEF = {
+    "IJS":     dict(init_mult=2, per_gen=3),
+    "JS":      dict(init_mult=1, per_gen=1),
+    "NSGA-II": dict(init_mult=1, per_gen=1),
+    "GA":      dict(init_mult=1, per_gen=1),
+    "PSO":     dict(init_mult=1, per_gen=1),
+    "GWO":     dict(init_mult=1, per_gen=1),
+}
+
+
+def iters_for_nfe(algo, target_nfe, pop):
+    """按目标评价次数反解该算法的迭代数。"""
+    c = NFE_COEF[algo]
+    return max(1, int(round((target_nfe - pop * c["init_mult"])
+                            / (pop * c["per_gen"]))))
+
+
+def nfe_of(algo, iters, pop):
+    c = NFE_COEF[algo]
+    return pop * c["init_mult"] + pop * iters * c["per_gen"]
+
 
 def convergence_gen(curve, frac=0.99):
     f0, fstar = curve[0], curve[-1]
@@ -123,7 +148,8 @@ def run_scale(job):
     t_scale = time.time()
     sta, gz = resample_profile(align, step_m=step_m)
     ctx = dict(sta=sta, gz=gz, total_len_m=align["s"][-1])
-    dim = len(sta); lb, ub = np.zeros(dim), np.ones(dim)
+    dim = len(sta) - 1          # 决策变量 = 逐段纵坡, 个数 = 桩号数-1
+    lb, ub = np.zeros(dim), np.ones(dim)
 
     # 熵权法权重(基准种群客观确定, 该规模统一)
     base_rng = np.random.default_rng(2025)
@@ -132,14 +158,22 @@ def run_scale(job):
     E0 = np.array([objectives(base_pop[i], ctx)[1] for i in range(pop_size)])
     wC, wE = entropy_weights(C0, E0)
     C_ref, E_ref = float(C0.mean()), float(E0.mean())
+    # 统一预算: 以完整 IJS 在 max_iter 代下的评价次数为基准, 其余算法按 nfe 反解迭代数
+    target_nfe = nfe_of("IJS", max_iter, pop_size)
+    iters = {a: iters_for_nfe(a, target_nfe, pop_size) for a in ALGOS}
     print(f"=== {label}  dim={dim}  wC={wC:.3f} wE={wE:.3f} ===", flush=True)
+    print(f"    [预算] 目标 nfe={target_nfe:,}; 迭代数 "
+          + ", ".join(f"{a}={iters[a]}({nfe_of(a, iters[a], pop_size):,})"
+                      for a in ALGOS), flush=True)
 
     scale_res = dict(dim=dim, step_m=step_m, label=label,
                      wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
+                     target_nfe=target_nfe, iters=dict(iters),
                      algos={}, curves={}, fronts={})
     F_samples = {}   # 供统计检验: {algo:[n_runs best_f]}
 
     for algo in ALGOS:
+        it_a = iters[algo]
         best_fs, conv_gens, runtimes = [], [], []
         run_curves = []
         for r in range(n_runs):
@@ -149,20 +183,20 @@ def run_scale(job):
                 # NSGA-II 双目标: best_f 取其前沿中标量化最优点(同口径)
                 fbi = make_biobj_fn(ctx, C_ref, E_ref)
                 t0 = time.time()
-                rn = run_NSGA2(fbi, lb, ub, pop0, max_iter, 1000 + r)
+                rn = run_NSGA2(fbi, lb, ub, pop0, it_a, 1000 + r)
                 rt = time.time() - t0
                 fr = rn["front_F"]
                 scal = wC * fr[:, 0] + wE * fr[:, 1]
                 bf = float(scal.min())
                 best_fs.append(bf)
-                conv_gens.append(max_iter)  # NSGA-II 无单点收敛曲线
+                conv_gens.append(it_a)  # NSGA-II 无单点收敛曲线
                 runtimes.append(rt)
                 if r == n_runs // 2:
                     run_curves.append(None)
             else:
                 f = make_scalar_fn(ctx, wC, wE, C_ref, E_ref)
                 bf, curve, rt, bx = run_one_scalar(algo, f, lb, ub, pop0,
-                                                   max_iter, 1000 + r)
+                                                   it_a, 1000 + r)
                 best_fs.append(bf)
                 conv_gens.append(convergence_gen(curve))
                 runtimes.append(rt)
@@ -174,6 +208,8 @@ def run_scale(job):
             best=float(best_fs.min()), mean=float(best_fs.mean()),
             std=float(best_fs.std()), median=float(np.median(best_fs)),
             conv_gen_mean=float(np.mean(conv_gens)),
+            conv_nfe_mean=float(nfe_of(algo, np.mean(conv_gens), pop_size)),
+            max_iter=it_a, nfe=nfe_of(algo, it_a, pop_size),
             runtime_mean=float(np.mean(runtimes)),
             best_fs=best_fs.tolist())
         if run_curves and run_curves[0] is not None:
@@ -187,7 +223,7 @@ def run_scale(job):
     fseed_pop = np.random.default_rng(1500).random((pop_size, dim))
     for algo in ALGOS:
         fr = pareto_front_by_weights(algo, ctx, C_ref, E_ref, lb, ub,
-                                     fseed_pop, max_iter, 1500,
+                                     fseed_pop, iters[algo], 1500,
                                      n_weights=11)
         fronts[algo] = fr.tolist()
     ref_front = build_reference_front([np.array(fronts[a]) for a in ALGOS])
@@ -250,6 +286,8 @@ def main():
             results = pool.map(run_scale, jobs)
 
     out = dict(meta=dict(pop_size=pop_size, max_iter=max_iter, n_runs=n_runs,
+                         budget="按 nfe 对齐(以完整 IJS 的 max_iter 代为基准)",
+                         nfe_coef=NFE_COEF,
                          total_km=align["total_km"], algos=ALGOS,
                          scales={k: SCALES[k]["label"] for k in scale_keys},
                          smoke=bool(args.smoke), n_workers=n_workers,

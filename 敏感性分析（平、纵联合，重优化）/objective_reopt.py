@@ -103,6 +103,8 @@ def objectives_reopt(x, pc, P=None):
     grades = _grades(sta, design_z)
     over = np.abs(grades) - LONG_STD_100["grade_max"]
     pen += np.sum(np.where(over > 0, over, 0.0)) * 1e9                # 纵坡≤4%(式4.27)
+    short = LONG_STD_100["grade_min"] - np.abs(grades)
+    pen += np.sum(np.where(short > 0, short, 0.0)) * 1e9               # 最小纵坡(排水)
     dgrade = np.abs(np.diff(grades))
     pen += np.sum(np.where(dgrade > 0.03, dgrade - 0.03, 0.0)) * 5e8  # 相邻坡差(式4.28-4.29)
 

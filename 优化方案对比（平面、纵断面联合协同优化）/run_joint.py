@@ -27,13 +27,13 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
     os.environ.setdefault(_v, "1")
 import numpy as np
 
-from params import ALGO, CASE
+from params import ALGO, CASE, LONG_STD_100
 from data_loader import load_alignment
 from algorithms import run, VARIANTS
 from objective import entropy_weights
 from objective_joint import (make_plane_context, objectives_joint,
                              make_scalar_joint, decode_joint,
-                             N_CTRL, M_PROF, CORRIDOR_HALF_W,
+                             N_CTRL, M_PROF, M_PROF_VAR, CORRIDOR_HALF_W,
                              STEP_PLANE_M, STEP_PROFILE_M)
 from safety import hazard_profile
 
@@ -100,20 +100,20 @@ def make_existing_x(pc, dim):
     注: 决策变量是 M_PROF 个变坡点(10m 一个), 而 gz_new/sta 是 M_EVAL 个评价桩号
         (10m 一个); 故先在评价桩号上做 0.5km 平滑, 再采样到变坡点上反解。
     """
-    x = np.full(dim, 0.5)                       # 平面 δ=0, 纵断面暂置贴地
+    x = np.full(dim, 0.5)                       # 平面 δ=0, 纵断面暂置零坡
     d0 = decode_joint(x, pc)
     gz = d0["gz_new"]; sta = d0["sta"]          # 评价桩号(10m)
-    amp = pc["amp"]
     step = np.median(np.diff(sta))              # 评价桩号间距(≈10m)
     win = max(int(round(500.0 / step)), 3)      # 0.5km 平滑窗口
     if win % 2 == 0:
         win += 1
     kern = np.ones(win) / win
     design_A = np.convolve(gz, kern, mode="same")           # 平滑地面线(10m)
-    # 采样到变坡点, 并相对该处地面高程反解归一化决策量
+    # 采样到变坡点, 再反解为逐段纵坡决策量 x = 0.5*(i/imax + 1)
     design_A_ctrl = np.interp(d0["sta_ctrl"], sta, design_A)
+    grades_A = np.diff(design_A_ctrl) / np.diff(d0["sta_ctrl"])
     x[N_CTRL:] = np.clip(
-        0.5 + (design_A_ctrl - d0["gz_ctrl"]) / (2.0 * amp), 0.0, 1.0)
+        0.5 * (grades_A / LONG_STD_100["grade_max"] + 1.0), 0.0, 1.0)
     return x
 
 
@@ -129,7 +129,7 @@ def main():
     t0 = time.time()
     align = load_alignment()
     pc = make_plane_context(align)
-    dim = N_CTRL + M_PROF
+    dim = N_CTRL + M_PROF_VAR
     lb, ub = np.zeros(dim), np.ones(dim)
     n_pareto = 21
     if args.smoke:
@@ -137,16 +137,16 @@ def main():
         n_pareto = 3
         print(f"[冒烟] iter={MAX_ITER}, Pareto 权重点={n_pareto}")
     print(f"[数据] 北环高速 {align['total_km']:.3f} km")
-    print(f"[联合] 决策维度 dim={dim} (平面{N_CTRL} + 纵断面{M_PROF}), "
+    print(f"[联合] 决策维度 dim={dim} (平面{N_CTRL} + 纵断面纵坡{M_PROF_VAR}), "
           f"走廊带±{CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}")
 
     # ---------- 熵权法权重(基准种群客观确定, 式5.3-5.4) ----------
     # 平面分量给足初始探索幅度(全走廊带), 避免平面子空间(仅 N_CTRL 维)在高维
-    # 联合搜索中被纵断面(M_PROF 维)淹没。
+    # 联合搜索中被纵断面(M_PROF_VAR 维)淹没。
     rng = np.random.default_rng(2025)
     base = np.empty((POP_SIZE, dim))
     base[:, :N_CTRL] = 0.5 + (rng.random((POP_SIZE, N_CTRL)) - 0.5) * 1.0
-    base[:, N_CTRL:] = rng.random((POP_SIZE, M_PROF))
+    base[:, N_CTRL:] = rng.random((POP_SIZE, M_PROF_VAR))
     base = np.clip(base, 0, 1)
     C0 = np.array([objectives_joint(base[i], pc)[0] for i in range(POP_SIZE)])
     E0 = np.array([objectives_joint(base[i], pc)[1] for i in range(POP_SIZE)])
@@ -219,7 +219,7 @@ def main():
           f"缩短 {reduce_pct:.2f}%")
 
     out = dict(
-        meta=dict(dim=dim, N_ctrl=N_CTRL, M_prof=M_PROF,
+        meta=dict(dim=dim, N_ctrl=N_CTRL, M_prof=M_PROF, M_prof_var=M_PROF_VAR,
                   corridor_half_w=CORRIDOR_HALF_W, pop_size=POP_SIZE,
                   max_iter=MAX_ITER, wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
                   total_km=align["total_km"], Rmin_req=400,

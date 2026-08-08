@@ -82,6 +82,7 @@ def _n_stations(step_m):
 
 N_CTRL = _n_stations(STEP_PLANE_CTRL_M)   # 平面控制点个数 -> 决定 (x,y)
 M_PROF = _n_stations(STEP_PROFILE_CTRL_M) # 纵断面变坡点个数 -> 决定 z
+M_PROF_VAR = M_PROF - 1                   # 纵断面决策变量个数 = 变坡点间的纵坡段数
 M_EVAL = _n_stations(STEP_EVAL_M)         # 目标函数评价桩号个数(每 10 m 一个), 非决策变量
 
 
@@ -157,12 +158,19 @@ def decode_joint(x, pc):
     s_meas = pc["s_meas"]
     gz_new = np.interp(sta / sarc[-1] * s_meas[-1], s_meas, pc["gz_meas"])
 
-    # 纵断面: M_PROF 个变坡点(10 m 一个)的设计高程, 再线性插值到评价桩号。
-    # 变坡点高程 = 该处地面高程 ± 可调幅度(同 objective.decode 口径);
+    # 纵断面: M_PROF 个变坡点, 决策变量是其间的 M_PROF-1 个【逐段纵坡】。
+    # 纵坡 i_k = (2*x_k-1)*imax 是箱约束, 按构造满足坡度限值;
+    # 变坡点高程由 z_0 = 起点地面高程 起累加(式4.19), 故改动任一纵坡
+    # 会平移其下游全部高程, 土方成本不再逐变坡点可分离。
     # 插值后变坡点之间为等坡段, 坡度仅在变坡点处改变(真实纵断面设计形态)。
     sta_ctrl = np.linspace(0.0, sarc[-1], M_PROF)
     gz_ctrl = np.interp(sta_ctrl / sarc[-1] * s_meas[-1], s_meas, pc["gz_meas"])
-    design_z_ctrl = gz_ctrl + (x[N_CTRL:] - 0.5) * 2.0 * pc["amp"]
+    grades_ctrl = (x[N_CTRL:] * 2.0 - 1.0) * LONG_STD_100["grade_max"]
+    dz_ctrl = grades_ctrl * np.diff(sta_ctrl)
+    _z = np.concatenate(([gz_ctrl[0]], gz_ctrl[0] + np.cumsum(dz_ctrl)))
+    # 终点闭合: 起终点高程均锚定在地面线(与既有路衔接), 否则纵坡序列是自由随机
+    # 游走, 终点误差可达百米量级, 土方成本离散度会把熵权全部吸到 C 上。
+    design_z_ctrl = _z - (_z[-1] - gz_ctrl[-1]) * sta_ctrl / sta_ctrl[-1]
     design_z = np.interp(sta, sta_ctrl, design_z_ctrl)
 
     return dict(xx=xx, yy=yy, L_new=L_new, R=R, sta=sta,
@@ -201,10 +209,12 @@ def objectives_joint(x, pc):
     Rmin = FLAT_STD_100["R_extreme_m"]
     R = d["R"]
     pen += np.sum(np.where(R < Rmin, (Rmin - R) / Rmin, 0.0)) * 5e7
-    # (b) 纵断面: 纵坡 |i| ≤ 4% (式4.27)
+    # (b) 纵断面: imin ≤ |i| ≤ imax = 4% (式4.27)
     grades = _grades(sta, design_z)
     over = np.abs(grades) - LONG_STD_100["grade_max"]
     pen += np.sum(np.where(over > 0, over, 0.0)) * 1e9
+    short = LONG_STD_100["grade_min"] - np.abs(grades)   # 最小纵坡(排水)
+    pen += np.sum(np.where(short > 0, short, 0.0)) * 1e9
     # (c) 竖曲线: 相邻纵坡代数差限制(式4.28-4.29 近似)
     dgrade = np.abs(np.diff(grades))
     pen += np.sum(np.where(dgrade > 0.03, dgrade - 0.03, 0.0)) * 5e8
