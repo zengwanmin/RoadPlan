@@ -20,8 +20,8 @@ import os, json, time, argparse
 import numpy as np
 
 from params import ALGO
-from data_loader import load_alignment, resample_profile
-from objective import objectives, entropy_weights, make_scalar_fn
+from data_loader import load_alignment
+from objective import objectives, entropy_weights, make_scalar_fn, fixed_plane_ctx
 from algorithms import run, VARIANTS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -54,13 +54,15 @@ def main():
         max_iter, n_runs = 5, 3
         print(f"[冒烟] max_iter={max_iter}, n_runs={n_runs}")
 
-    # ---- 1. 数据与上下文 ----
+    # ---- 1. 数据与上下文(与主实验同口径: 准天然地面+豁免带+生态隧道常数) ----
     align = load_alignment()
-    sta, gz = resample_profile(align, step_m=100.0)
-    ctx = dict(sta=sta, gz=gz, total_len_m=align["s"][-1])
+    ctx = fixed_plane_ctx(align, step_m=100.0)
+    sta = ctx["sta"]
     dim = len(sta)
     lb, ub = np.zeros(dim), np.ones(dim)
-    print(f"[数据] 北环高速 {align['total_km']:.3f} km, 变坡点/桩号 dim={dim}")
+    print(f"[数据] 北环高速 {align['total_km']:.3f} km, 变坡点/桩号 dim={dim}, "
+          f"生态隧道 {ctx['L_eco_km']:.2f} km, 豁免桩号占比 "
+          f"{ctx['exempt'].mean()*100:.1f}%")
 
     # ---- 2. 熵权法权重(用固定基准种群客观确定, 全实验统一口径) ----
     base_rng = np.random.default_rng(2025)

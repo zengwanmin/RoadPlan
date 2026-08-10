@@ -28,7 +28,7 @@ from params import ALGO, TRAFFIC, LCC
 from data_loader import load_alignment
 from algorithms import run, VARIANTS
 from objective import entropy_weights
-from objective_joint import make_plane_context, N_CTRL, M_PROF
+from objective_joint import make_plane_context, DIM, N_MODE, M_PROF
 from objective_reopt import objectives_reopt, make_scalar_reopt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -42,7 +42,7 @@ SEED_BASE = 20250722   # 复现用固定种子基数
 
 # --- worker 进程内的全局(由 initializer 设定, 兼容 macOS spawn) ---
 _PC = None
-_DIM = N_CTRL + M_PROF
+_DIM = DIM        # 与主实验联合模型一致(平面模态 N_MODE + 纵断面 M_PROF)
 _LB = np.zeros(_DIM); _UB = np.ones(_DIM)
 POP_SIZE = ALGO["pop_size"]      # 主进程默认; worker 由 initargs 覆盖
 MAX_ITER = ALGO["max_iter"]
@@ -58,12 +58,9 @@ def _init_worker(align, pop_size, max_iter):
 
 
 def _base_pop(seed):
-    """联合优化初始种群(与优化方案对比一致: 平面全走廊探索, 纵断面全域)。"""
+    """联合优化初始种群(与主实验一致: 模态系数与纵坡取值域即规范限值, 均匀采样)。"""
     rng = np.random.default_rng(seed)
-    base = np.empty((POP_SIZE, _DIM))
-    base[:, :N_CTRL] = 0.5 + (rng.random((POP_SIZE, N_CTRL)) - 0.5) * 1.0
-    base[:, N_CTRL:] = rng.random((POP_SIZE, M_PROF))
-    return np.clip(base, 0, 1)
+    return rng.random((POP_SIZE, _DIM))
 
 
 def _optimize_one(task):
@@ -76,6 +73,10 @@ def _optimize_one(task):
     """
     pc = _PC
     P = task["P"]; seed = task["seed"]
+    # 走廊带半宽: 项目⑧逐任务切换, 其余任务恢复主实验默认 ±500m。
+    # worker 进程会被复用, 故每个任务开始时都必须显式设置(进程内全局)。
+    import objective_joint as OJ
+    OJ.set_corridor(task.get("corridor", 500.0))
     base = _base_pop(seed)
     # 用该点参数化目标在初始种群上算 (C,E) -> 熵权法客观权重(式5.3-5.4)
     C0 = np.empty(POP_SIZE); E0 = np.empty(POP_SIZE)
@@ -94,6 +95,8 @@ def _optimize_one(task):
                 C=float(C), E=float(E), pen=float(pen),
                 L_km=float(info["L_km"]), Rmin=float(info["Rmin"]),
                 ml=float(info["ml"]), kwh=float(info["kwh"]),
+                L_eco_km=float(info["L_eco_km"]),
+                corridor=float(task.get("corridor", 500.0)),
                 wC=float(wC), wE=float(wE),
                 P={k: float(v) for k, v in P.items()})
 
@@ -142,6 +145,16 @@ def build_tasks(grids):
                               P=dict(ev=TRAFFIC["n2_ev"], traffic_growth=0.0,
                                      fuel_price_growth=0.0, elec_price_growth=0.0,
                                      fuel_save=0.0, elec_save=0.0))); gid += 1
+    # 项目⑧(图D9): 走廊带半宽敏感性(基准情景, 每点重优化)。
+    # 决策权重固定取主实验前沿熵权决策选中的 w1=0.65: ①跨走廊带各点同一目标,
+    # C/E 可直接比较; ②避免逐点熵权在宽走廊带下偏向能耗端而落入
+    # "全线高架"退化区(该现象已在首轮运行中实测出现, C≈54亿)。
+    for k, cw in enumerate(grids.get("corridor", [])):
+        tasks.append(dict(kind="front", item=8, idx=(k,), seed=SEED_BASE + gid,
+                          w1=0.65, corridor=float(cw),
+                          P=dict(ev=TRAFFIC["n2_ev"], traffic_growth=0.0,
+                                 fuel_price_growth=0.0, elec_price_growth=0.0,
+                                 fuel_save=0.0, elec_save=0.0))); gid += 1
     return tasks
 
 
@@ -158,7 +171,7 @@ def main():
     t_all = time.time()
     align = load_alignment()
     print(f"[数据] 北环高速 {align['total_km']:.3f} km  dim={_DIM} "
-          f"(平面{N_CTRL}+纵断面{M_PROF})  pop={POP_SIZE} iter={MAX_ITER}")
+          f"(平面模态{N_MODE}+纵断面{M_PROF})  pop={POP_SIZE} iter={MAX_ITER}")
 
     if args.smoke:
         MAX_ITER = 5
@@ -167,8 +180,9 @@ def main():
                      fuel_save=[0.0, 0.05], elec_save=[0.0, 0.05],
                      w1=[0.1, 0.5, 0.9],
                      w1_cost=[0.7, 0.85, 1.0],       # 图D6 重成本
-                     w1_energy=[0.0, 0.15, 0.3],     # 图D7 重能耗(能耗比例0.7-1.0)
-                     w1_balanced=[0.4, 0.5, 0.6])    # 图D8 折中
+                     w1_energy=[0.0, 0.1, 0.2],      # 图D7 重能耗(能耗比例0.8-1.0)
+                     w1_balanced=[0.3, 0.5, 0.7],    # 图D8 折中(占比0.3-0.7)
+                     corridor=[250, 2500])           # 图D9 走廊带(冒烟两端)
         print(f"[冒烟] iter={MAX_ITER}")
     else:
         # 用户选定: EV 轴加密 (① 6×21, ② 6×6, ③ 6×6, ④ 9) = 207 点
@@ -182,8 +196,9 @@ def main():
             w1=list(np.linspace(0.1, 0.9, 9)),                      # 9
             # 三段权重重优化(图D6/D7/D8): 成本权重 wC(w1)
             w1_cost=list(np.linspace(0.7, 1.0, 7)),      # 图D6 重成本: 成本比例 0.7-1.0
-            w1_energy=list(np.linspace(0.0, 0.3, 7)),    # 图D7 重能耗: 能耗比例 0.7-1.0(即 wC 0-0.3)
-            w1_balanced=list(np.linspace(0.4, 0.6, 5)),  # 图D8 折中: 成本/能耗比例各 0.4-0.6
+            w1_energy=list(np.linspace(0.0, 0.2, 5)),    # 图D7 重能耗: 能耗比例 0.8-1.0(即 wC 0-0.2)
+            w1_balanced=list(np.linspace(0.3, 0.7, 9)),  # 图D8 折中: 成本/能耗比例各 0.3-0.7
+            corridor=[200, 250, 500, 1000, 2000, 2500],  # 图D9 走廊带半宽敏感性(m)
         )
 
     tasks = build_tasks(grids)
@@ -287,8 +302,15 @@ def _assemble(recs, tasks, grids, align):
                             L_km=r["L_km"], Rmin=r["Rmin"], pen=r["pen"]))
         return pts
     reweight_cost = _sweep(5, "w1_cost")        # 成本比例 0.7-1.0
-    reweight_energy = _sweep(6, "w1_energy")    # 能耗比例 0.7-1.0 (wC 0-0.3)
-    reweight_balanced = _sweep(7, "w1_balanced")  # 折中 wC 0.4-0.6
+    reweight_energy = _sweep(6, "w1_energy")    # 能耗比例 0.8-1.0 (wC 0-0.2)
+    reweight_balanced = _sweep(7, "w1_balanced")  # 折中 wC 0.3-0.7
+
+    # 项目⑧ 走廊带敏感性(图D9): 按半宽升序整理
+    corridor = [dict(corridor=r["corridor"], C=r["C"], E=r["E"],
+                     L_km=r["L_km"], Rmin=r["Rmin"], pen=r["pen"],
+                     L_eco_km=r.get("L_eco_km", float("nan")),
+                     wC=r["wC"])
+                for r in sorted(by.get(8, []), key=lambda r: r["corridor"])]
 
     meta = dict(dim=_DIM, pop_size=POP_SIZE, max_iter=MAX_ITER,
                 total_km=align["total_km"], n_points=len(recs),
@@ -302,7 +324,7 @@ def _assemble(recs, tasks, grids, align):
                 kwh_base=(base_rec["kwh"] if base_rec else float("nan")))
     return dict(meta=meta, item1=item1, item2=item2, item3=item3, item4=item4,
                 reweight_cost=reweight_cost, reweight_energy=reweight_energy,
-                reweight_balanced=reweight_balanced)
+                reweight_balanced=reweight_balanced, corridor=corridor)
 
 
 if __name__ == "__main__":

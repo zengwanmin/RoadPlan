@@ -33,10 +33,10 @@ import numpy as np
 from params import ALGO
 from data_loader import load_alignment
 from algorithms import run, VARIANTS
-from objective import entropy_weights
 from objective_joint import (make_plane_context, objectives_joint, decode_joint,
                              make_scalar_plane, build_plane_from_delta, plane_lcc,
-                             N_CTRL, M_PROF, CORRIDOR_HALF_W,
+                             joint_baseline, run_ijs_two_phase, START_AMP_M,
+                             DIM, N_MODE, M_PROF, CORRIDOR_HALF_W,
                              STEP_PLANE_M, STEP_PROFILE_M)
 from safety import hazard_profile
 
@@ -57,24 +57,23 @@ def evaluate(x, pc):
                 CB=info["CB"], CS=info["CS"], CQ=info["CQ"],
                 E_fuel=info["E_fuel"], E_ele=info["E_ele"],
                 Vs=info["Vs"], Vh=info["Vh"], Q_mean=Q_mean,
+                L_eco_km=info["L_eco_km"], L_ic_km=info["L_ic_km"],
+                L_bridge_new=info["L_bridge_new"],
+                L_tunnel_new=info["L_tunnel_new"],
                 plane_x=d["xx"].tolist(), plane_y=d["yy"].tolist(),
                 design_z=d["design_z"].tolist(), sta=d["sta"].tolist(),
                 gz_new=d["gz_new"].tolist(), Q_series=Q_series.tolist())
 def make_existing_x(pc, dim):
-    """现状方案 M-A: 平面 δ=0(实测中线) + 人工粗放纵断面(0.5km 平滑地面线)。
-    与 run_joint.make_existing_x 完全同口径: 先在 10m 评价桩号上平滑, 再采样到
-    10m 变坡点上反解归一化决策量。"""
+    """现状方案 M-A: 平面 δ=0(实测中线) + 实测路面高程作为既有设计线。
+    与 run_joint.make_existing_x 完全同口径(纵坡编码反解)。"""
+    from params import LONG_STD_100
     x = np.full(dim, 0.5)
     d0 = decode_joint(x, pc)
-    gz = d0["gz_new"]; sta = d0["sta"]; amp = pc["amp"]
-    step = np.median(np.diff(sta))
-    win = max(int(round(500.0 / step)), 3)
-    if win % 2 == 0:
-        win += 1
-    design_A = np.convolve(gz, np.ones(win) / win, mode="same")
-    design_A_ctrl = np.interp(d0["sta_ctrl"], sta, design_A)
-    x[N_CTRL:] = np.clip(
-        0.5 + (design_A_ctrl - d0["gz_ctrl"]) / (2.0 * amp), 0.0, 1.0)
+    sta_ctrl = d0["sta_ctrl"]; gz_ctrl = d0["gz_ctrl"]
+    z_road = np.interp(sta_ctrl, pc["s_meas"], pc["gz_meas"])
+    x[N_MODE] = np.clip(0.5 + (z_road[0] - gz_ctrl[0]) / (2.0 * START_AMP_M), 0.0, 1.0)
+    g = np.diff(z_road) / np.diff(sta_ctrl)
+    x[N_MODE + 1:] = np.clip(0.5 + g / (2.0 * LONG_STD_100["grade_max"]), 0.0, 1.0)
     return x
 
 
@@ -90,9 +89,9 @@ def main():
     t0 = time.time()
     align = load_alignment()
     pc = make_plane_context(align)
-    dim = N_CTRL + M_PROF
+    dim = DIM
     print(f"[数据] 北环高速 {align['total_km']:.3f} km")
-    print(f"[两阶段对照] dim={dim} (平面{N_CTRL}@{STEP_PLANE_M:.0f}m + "
+    print(f"[两阶段对照] dim={dim} (平面模态{N_MODE} + "
           f"纵断面{M_PROF}@{STEP_PROFILE_M:.0f}m), "
           f"走廊带±{CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}")
 
@@ -105,19 +104,22 @@ def main():
     # ========== 第一阶段: 平面优化(只搜平面变量, min 平面LCC, R>=400m) ==========
     print("[Stage 1] 平面线形优化 ...")
     rng = np.random.default_rng(2025)
-    pop_plane = np.clip(0.5 + (rng.random((POP_SIZE, N_CTRL)) - 0.5) * 1.0, 0, 1)
-    lbP, ubP = np.zeros(N_CTRL), np.ones(N_CTRL)
-    _, _, L0_plane, _ = build_plane_from_delta(pc, np.full(N_CTRL, 0.5))
+    pop_plane = rng.random((POP_SIZE, N_MODE))
+    pop_plane[0] = 0.5                       # 注入现状平面(δ=0), 与联合同等
+    lbP, ubP = np.zeros(N_MODE), np.ones(N_MODE)
+    _, _, L0_plane, _ = build_plane_from_delta(pc, np.full(N_MODE, 0.5))
     C_ref_plane = plane_lcc(L0_plane)
-    fP = make_scalar_plane(pc, C_ref_plane)
-    rP = run(fP, lbP, ubP, pop_plane, MAX_ITER, 1000, **VARIANTS["V5_IJS"])
+    rP = run_ijs_two_phase(lambda ps: make_scalar_plane(pc, C_ref_plane, pen_scale=ps),
+                           lbP, ubP, pop_plane, MAX_ITER, 1000)
     delta_star = rP["best_x"]                       # 最优平面(冻结)
     _, _, L_star, R_star = build_plane_from_delta(pc, delta_star)
     print(f"[Stage 1] 最优平面 L={L_star/1000:.3f}km Rmin={R_star.min():.0f}m "
           f"(现状 {L0_plane/1000:.3f}km)")
 
     # M-S1: 最优平面 + 贴地纵断面
-    x_S1 = np.concatenate([delta_star, np.full(M_PROF, 0.5)])
+    # M-S1: 最优平面 + 【现状纵断面】(不是"纵坡全0"的水平线 —— 新编码下 0.5 表示
+    #       纵坡为零, 会得到一条水平线, 不能代表"仅完成第一阶段"的方案)
+    x_S1 = np.concatenate([delta_star, x_A[N_MODE:]])
     res_S1 = evaluate(x_S1, pc)
     print(f"[M-S1] C={res_S1['C']/1e8:.4f}亿 E={res_S1['E']/1e8:.4f}亿 L={res_S1['L_km']:.3f}km")
 
@@ -127,21 +129,23 @@ def main():
     def full_x(prof_norm):
         return np.concatenate([delta_star, prof_norm])
 
+    # 熵权与参考尺度: 与联合方案【共用】同一组(由联合基准种群一次算出), 使两种方法
+    # 最小化同一个标量目标 F。若各自从自己的种群另算权重, C/E 单项将不可比。
     baseP = rng.random((POP_SIZE, M_PROF))
-    C0 = np.array([objectives_joint(full_x(baseP[i]), pc)[0] for i in range(POP_SIZE)])
-    E0 = np.array([objectives_joint(full_x(baseP[i]), pc)[1] for i in range(POP_SIZE)])
-    wC, wE = entropy_weights(C0, E0)
-    C_ref, E_ref = float(C0.mean()), float(E0.mean())
-    print(f"[熵权法] wC={wC:.4f}, wE={wE:.4f}")
+    baseP[0] = x_A[N_MODE:]                  # 注入现状纵断面, 与联合同等
+    _, wC, wE, C_ref, E_ref = joint_baseline(pc, POP_SIZE, x_seed=x_A)
+    print(f"[熵权法] wC={wC:.4f}, wE={wE:.4f} (与联合方案共用)")
 
     lb2, ub2 = np.zeros(M_PROF), np.ones(M_PROF)
     pop2 = baseP.copy()
 
-    def scalar_prof(prof_norm):
-        C, E, pen, _ = objectives_joint(full_x(prof_norm), pc)
-        return wC * (C / C_ref) + wE * (E / E_ref) + pen / C_ref
+    def make_prof_f(ps):
+        def f(prof_norm):
+            C, E, pen, _ = objectives_joint(full_x(prof_norm), pc, pen_scale=ps)
+            return wC * (C / C_ref) + wE * (E / E_ref) + pen
+        return f
 
-    rC = run(scalar_prof, lb2, ub2, pop2, MAX_ITER, 2000, **VARIANTS["V5_IJS"])
+    rC = run_ijs_two_phase(make_prof_f, lb2, ub2, pop2, MAX_ITER, 2000)
     res_C = evaluate(full_x(rC["best_x"]), pc)
     print(f"[M-C 两阶段] C={res_C['C']/1e8:.4f}亿 E={res_C['E']/1e8:.4f}亿 "
           f"L={res_C['L_km']:.3f}km Rmin={res_C['Rmin']:.0f}m pen={res_C['penalty']:.2e} "
@@ -151,7 +155,7 @@ def main():
     print(f"[里程] 现状 {res_A['L_km']:.3f}km -> 两阶段 {res_C['L_km']:.3f}km 缩短 {reduce_pct:.2f}%")
 
     out = dict(
-        meta=dict(dim=dim, N_ctrl=N_CTRL, M_prof=M_PROF,
+        meta=dict(dim=dim, n_mode=N_MODE, M_prof=M_PROF,
                   step_plane_m=STEP_PLANE_M, step_profile_m=STEP_PROFILE_M,
                   corridor_half_w=CORRIDOR_HALF_W, pop_size=POP_SIZE,
                   max_iter=MAX_ITER, wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
@@ -166,8 +170,8 @@ def main():
                   Rmin_plane=float(R_star.min())),
         M_A=res_A, M_S1=res_S1, M_C=res_C,
         length_reduction_pct=reduce_pct,
-        convergence_stage1=rP["curve"].tolist(),
-        convergence_stage2=rC["curve"].tolist(),
+        convergence_stage1=list(rP["curve"]),
+        convergence_stage2=list(rC["curve"]),
     )
     fn = "twostage_results_smoke.json" if args.smoke else "twostage_results.json"
     with open(os.path.join(RESULTS, fn), "w", encoding="utf-8") as fp:

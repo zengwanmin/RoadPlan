@@ -32,8 +32,9 @@ from data_loader import load_alignment
 from algorithms import run, VARIANTS
 from objective import entropy_weights
 from objective_joint import (make_plane_context, objectives_joint,
-                             make_scalar_joint, decode_joint,
-                             N_CTRL, M_PROF, CORRIDOR_HALF_W,
+                             make_scalar_joint, decode_joint, joint_baseline,
+                             run_ijs_two_phase, START_AMP_M,
+                             DIM, N_MODE, M_PROF, CORRIDOR_HALF_W,
                              STEP_PLANE_M, STEP_PROFILE_M)
 from safety import hazard_profile
 
@@ -65,9 +66,11 @@ def _solve_one(task):
     结果与串行执行完全一致: 初始种群 pop0 与 seed 均由主进程固定下发, 与执行顺序无关。
     """
     pc, c = _PC, _CTX
-    f = make_scalar_joint(pc, task["wC"], task["wE"], c["C_ref"], c["E_ref"])
-    r = run(f, c["lb"], c["ub"], c["pop0"], c["max_iter"], task["seed"],
-            **VARIANTS["V5_IJS"])
+    def make_f(ps):
+        return make_scalar_joint(pc, task["wC"], task["wE"], c["C_ref"],
+                                 c["E_ref"], pen_scale=ps)
+    r = run_ijs_two_phase(make_f, c["lb"], c["ub"], c["pop0"],
+                          c["max_iter"], task["seed"])
     C, E, pen, _ = objectives_joint(r["best_x"], pc)
     return dict(tag=task["tag"], wC=task["wC"], wE=task["wE"],
                 C=float(C), E=float(E), pen=float(pen),
@@ -84,6 +87,9 @@ def evaluate_joint(x, pc):
                 CB=info["CB"], CS=info["CS"], CQ=info["CQ"],
                 E_fuel=info["E_fuel"], E_ele=info["E_ele"],
                 Vs=info["Vs"], Vh=info["Vh"], Q_mean=Q_mean,
+                L_eco_km=info["L_eco_km"], L_ic_km=info["L_ic_km"],
+                L_bridge_new=info["L_bridge_new"],
+                L_tunnel_new=info["L_tunnel_new"],
                 plane_x=d["xx"].tolist(), plane_y=d["yy"].tolist(),
                 design_z=d["design_z"].tolist(), sta=d["sta"].tolist(),
                 gz_new=d["gz_new"].tolist(), Q_series=Q_series.tolist())
@@ -92,28 +98,22 @@ def evaluate_joint(x, pc):
 def make_existing_x(pc, dim):
     """
     构造现状方案 M-A 的联合决策向量:
-      平面: δ=0 (x[:N_CTRL]=0.5) -> 实测中线, 里程/走向不变;
-      纵断面: 人工粗放设计线 = 沿实测中线地面高程的 0.5km 尺度平滑
-              (未做全局精细优化), 在【变坡点】上反解为对应的 x[N_CTRL:]。
-    依据: 现状为人工选线, 依实测地面线按较粗控制尺度布设纵断面(局部平滑、
-          长直坡衔接), 故以 0.5km 平滑近似其未精细优化的纵断面。
-    注: 决策变量是 M_PROF 个变坡点(10m 一个), 而 gz_new/sta 是 M_EVAL 个评价桩号
-        (10m 一个); 故先在评价桩号上做 0.5km 平滑, 再采样到变坡点上反解。
+      平面: 模态系数全取 0.5 -> δ=0 -> 实测中线, 里程/走向不变;
+      纵断面: 直接采用【实测路面高程】作为既有设计线(GPS 实测的就是现状道路的
+              设计线), 按纵坡编码反解为起点高程偏移与各段纵坡。
+
+    注: 地面高程现已改为真实地形 DEM, 对地形做平滑并不等于既有道路的设计线,
+        故此处不再用"地面线平滑"近似现状纵断面, 而是直接用实测路面高程。
     """
-    x = np.full(dim, 0.5)                       # 平面 δ=0, 纵断面暂置贴地
+    from params import LONG_STD_100
+    x = np.full(dim, 0.5)                        # 平面 δ=0
     d0 = decode_joint(x, pc)
-    gz = d0["gz_new"]; sta = d0["sta"]          # 评价桩号(10m)
-    amp = pc["amp"]
-    step = np.median(np.diff(sta))              # 评价桩号间距(≈10m)
-    win = max(int(round(500.0 / step)), 3)      # 0.5km 平滑窗口
-    if win % 2 == 0:
-        win += 1
-    kern = np.ones(win) / win
-    design_A = np.convolve(gz, kern, mode="same")           # 平滑地面线(10m)
-    # 采样到变坡点, 并相对该处地面高程反解归一化决策量
-    design_A_ctrl = np.interp(d0["sta_ctrl"], sta, design_A)
-    x[N_CTRL:] = np.clip(
-        0.5 + (design_A_ctrl - d0["gz_ctrl"]) / (2.0 * amp), 0.0, 1.0)
+    sta_ctrl = d0["sta_ctrl"]; gz_ctrl = d0["gz_ctrl"]
+    # δ=0 时评价桩号与实测里程一致, 直接按里程取实测路面高程
+    z_road = np.interp(sta_ctrl, pc["s_meas"], pc["gz_meas"])
+    x[N_MODE] = np.clip(0.5 + (z_road[0] - gz_ctrl[0]) / (2.0 * START_AMP_M), 0.0, 1.0)
+    g = np.diff(z_road) / np.diff(sta_ctrl)      # 现状道路各段纵坡
+    x[N_MODE + 1:] = np.clip(0.5 + g / (2.0 * LONG_STD_100["grade_max"]), 0.0, 1.0)
     return x
 
 
@@ -129,7 +129,7 @@ def main():
     t0 = time.time()
     align = load_alignment()
     pc = make_plane_context(align)
-    dim = N_CTRL + M_PROF
+    dim = DIM
     lb, ub = np.zeros(dim), np.ones(dim)
     n_pareto = 21
     if args.smoke:
@@ -137,27 +137,19 @@ def main():
         n_pareto = 3
         print(f"[冒烟] iter={MAX_ITER}, Pareto 权重点={n_pareto}")
     print(f"[数据] 北环高速 {align['total_km']:.3f} km")
-    print(f"[联合] 决策维度 dim={dim} (平面{N_CTRL} + 纵断面{M_PROF}), "
+    print(f"[联合] 决策维度 dim={dim} (平面模态{N_MODE} + 纵断面{M_PROF}), "
           f"走廊带±{CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}")
 
     # ---------- 熵权法权重(基准种群客观确定, 式5.3-5.4) ----------
-    # 平面分量给足初始探索幅度(全走廊带), 避免平面子空间(仅 N_CTRL 维)在高维
-    # 联合搜索中被纵断面(M_PROF 维)淹没。
-    rng = np.random.default_rng(2025)
-    base = np.empty((POP_SIZE, dim))
-    base[:, :N_CTRL] = 0.5 + (rng.random((POP_SIZE, N_CTRL)) - 0.5) * 1.0
-    base[:, N_CTRL:] = rng.random((POP_SIZE, M_PROF))
-    base = np.clip(base, 0, 1)
-    C0 = np.array([objectives_joint(base[i], pc)[0] for i in range(POP_SIZE)])
-    E0 = np.array([objectives_joint(base[i], pc)[1] for i in range(POP_SIZE)])
-    wC, wE = entropy_weights(C0, E0)
-    C_ref, E_ref = float(C0.mean()), float(E0.mean())
-    print(f"[熵权法] wC={wC:.4f}, wE={wE:.4f}")
+    # 由 joint_baseline 统一产出, 两阶段对照(run_twostage.py)共用同一组
+    # (wC, wE, C_ref, E_ref), 使两种方法最小化同一个标量目标 F, 结果可直接比较。
+    x_A = make_existing_x(pc, dim)
+    base, wC, wE, C_ref, E_ref = joint_baseline(pc, POP_SIZE, x_seed=x_A)
+    print(f"[熵权法] wC={wC:.4f}, wE={wE:.4f} (与两阶段对照共用)")
 
     pop0 = base.copy()          # M-B/M-C/Pareto 共享同一初始种群保证公平
 
     # ---------- M-A 现状方案(人工选线, 未优化) ----------
-    x_A = make_existing_x(pc, dim)
     res_A = evaluate_joint(x_A, pc)
     print(f"[M-A] C={res_A['C']/1e8:.4f}亿 E={res_A['E']/1e8:.4f}亿(全周期) "
           f"L={res_A['L_km']:.3f}km Q={res_A['Q_mean']:.3f}")
@@ -196,22 +188,60 @@ def main():
     print(f"[M-B] C={res_B['C']/1e8:.4f}亿 E={res_B['E']/1e8:.4f}亿(全周期) "
           f"L={res_B['L_km']:.3f}km Rmin={res_B['Rmin']:.0f}m pen={res_B['penalty']:.2e}")
 
-    # ---------- M-C 平纵联合双目标协同 (熵权法, 本文方案) ----------
+    # ---------- M-C 标量寻优点(初始种群熵权, 保留作对照) ----------
     rC = solved["M_C"]
-    res_C = evaluate_joint(np.array(rC["best_x"]), pc)
-    print(f"[M-C] C={res_C['C']/1e8:.4f}亿 E={res_C['E']/1e8:.4f}亿(全周期) "
-          f"L={res_C['L_km']:.3f}km Rmin={res_C['Rmin']:.0f}m pen={res_C['penalty']:.2e} "
-          f"Q={res_C['Q_mean']:.3f}")
+    res_C_scalar = evaluate_joint(np.array(rC["best_x"]), pc)
+    print(f"[M-C标量] C={res_C_scalar['C']/1e8:.4f}亿 E={res_C_scalar['E']/1e8:.4f}亿 "
+          f"L={res_C_scalar['L_km']:.3f}km pen={res_C_scalar['penalty']:.2e}")
 
-    # ---------- Pareto 权重扫描结果整理 ----------
+    # ---------- Pareto 权重扫描结果整理(含 best_x) ----------
     pareto_sweep = []
     for k, w1 in enumerate(w_grid):
         rec = solved[f"pareto_{k}"]
         pareto_sweep.append(dict(w1=float(w1), C=rec["C"], E=rec["E"],
-                                 pen=rec["pen"]))
+                                 pen=rec["pen"], best_x=rec["best_x"]))
+
+    # ---------- M-C 最终方案: 前沿熵权决策(论文第5章"先前沿、后决策"流程) ----------
+    # ①候选 = 扫描解 + 标量寻优点, 要求可行(pen≈0);
+    # ②预算约束: C ≤ (1+BUDGET_TOL)×现状成本(改扩建工程预算约束, 剔除
+    #   "全线高架"等端部退化解, 避免熵权法对离群极差敏感);
+    # ③非支配筛选; ④熵权法(式5.3-5.4, 极差标准化)加权得分取最大者。
+    BUDGET_TOL = 0.10
+    cands = [dict(tag=f"pareto_{k}", **p) for k, p in enumerate(pareto_sweep)]
+    cands.append(dict(tag="M_C_scalar", w1=wC, C=res_C_scalar["C"],
+                      E=res_C_scalar["E"], pen=res_C_scalar["penalty"],
+                      best_x=rC["best_x"]))
+    feas = [c for c in cands if c["pen"] <= 1e-6
+            and c["C"] <= (1 + BUDGET_TOL) * res_A["C"]]
+    front = [c for c in feas
+             if not any((o["C"] <= c["C"] and o["E"] <= c["E"])
+                        and (o["C"] < c["C"] or o["E"] < c["E"]) for o in feas)]
+    M = np.array([[c["C"], c["E"]] for c in front])
+    mn, mx = M.min(0), M.max(0)
+    if np.all(mx - mn < 1e-6):                      # 退化: 前沿点全相同(冒烟等)
+        w_front = np.array([0.5, 0.5])
+        score = np.zeros(len(front))
+    else:
+        Zn = (mx - M) / (mx - mn + 1e-12)           # 成本型极差标准化
+        P = (Zn + 1e-6) / (Zn + 1e-6).sum(0)
+        Ej = -(P * np.log(P)).sum(0) / np.log(max(len(front), 2))   # 式5.3
+        w_front = (1 - Ej) / ((1 - Ej).sum() + 1e-12)               # 式5.4
+        score = Zn @ w_front
+    sel = front[int(score.argmax())]
+    print(f"[决策] 可行{len(feas)}/{len(cands)}, 前沿{len(front)}个, "
+          f"前沿熵权 wC={w_front[0]:.4f}/wE={w_front[1]:.4f} "
+          f"-> 选中 {sel['tag']}(w1={sel['w1']:.2f})")
+    res_C = evaluate_joint(np.array(sel["best_x"]), pc)
+    print(f"[M-C] C={res_C['C']/1e8:.4f}亿 E={res_C['E']/1e8:.4f}亿(全周期) "
+          f"L={res_C['L_km']:.3f}km Rmin={res_C['Rmin']:.0f}m pen={res_C['penalty']:.2e} "
+          f"Q={res_C['Q_mean']:.3f}")
+
     # 图C1 沿用中间区间(0.1-0.9)作参考前沿, 保持与原图口径一致
-    pareto = [p for p in pareto_sweep if 0.1 - 1e-9 <= p["w1"] <= 0.9 + 1e-9]
-    entropy_point = dict(C=res_C["C"], E=res_C["E"], wC=wC, wE=wE)
+    pareto = [dict(w1=p["w1"], C=p["C"], E=p["E"], pen=p["pen"])
+              for p in pareto_sweep if 0.1 - 1e-9 <= p["w1"] <= 0.9 + 1e-9]
+    entropy_point = dict(C=res_C["C"], E=res_C["E"], wC=float(w_front[0]),
+                         wE=float(w_front[1]), w1_selected=sel["w1"],
+                         budget_tol=BUDGET_TOL)
 
     # 里程缩短(现状 M-A -> 本文 M-C)
     reduce_pct = (res_A["L_km"] - res_C["L_km"]) / res_A["L_km"] * 100
@@ -219,7 +249,7 @@ def main():
           f"缩短 {reduce_pct:.2f}%")
 
     out = dict(
-        meta=dict(dim=dim, N_ctrl=N_CTRL, M_prof=M_PROF,
+        meta=dict(dim=dim, n_mode=N_MODE, M_prof=M_PROF,
                   corridor_half_w=CORRIDOR_HALF_W, pop_size=POP_SIZE,
                   max_iter=MAX_ITER, wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
                   total_km=align["total_km"], Rmin_req=400,
@@ -227,11 +257,11 @@ def main():
                   n_pareto=n_pareto, smoke=bool(args.smoke),
                   n_workers=n_workers,
                   energy_unit="全生命周期元(亿元)",
-                  note="平纵联合协同优化(三维解空间x/y/z): 平面控制点步长 "
-                       f"{STEP_PLANE_M:.0f}m(受 R>=400m 约束), 纵断面变坡点步长 "
-                       f"{STEP_PROFILE_M:.0f}m; 三方案 M-A/M-B/M-C 均在同一联合"
-                       "模型下评估/寻优"),
-        M_A=res_A, M_B=res_B, M_C=res_C,
+                  note="平纵联合协同优化(准天然地面DEM口径): 立交7.8km常数计费"
+                       "+桩号带土方豁免, 白云山隧道由生态区穿越长度内生, "
+                       f"走廊带±{CORRIDOR_HALF_W:.0f}m; M-C=前沿熵权决策"
+                       "(可行+预算约束C≤1.1×现状+非支配+熵权, 论文第5章流程)"),
+        M_A=res_A, M_B=res_B, M_C=res_C, M_C_scalar=res_C_scalar,
         pareto=pareto, pareto_sweep=pareto_sweep, entropy_point=entropy_point,
         length_reduction_pct=reduce_pct,
         measured=dict(x=align["X"].tolist(), y=align["Y"].tolist()),

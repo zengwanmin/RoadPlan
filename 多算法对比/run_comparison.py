@@ -38,9 +38,9 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
 import numpy as np
 
 from params import ALGO
-from data_loader import load_alignment, resample_profile
+from data_loader import load_alignment
 from objective import (objectives, entropy_weights, make_scalar_fn,
-                       make_biobj_fn)
+                       make_biobj_fn, fixed_plane_ctx)
 from algorithms import run, VARIANTS
 from benchmarks import run_GA, run_PSO, run_GWO, run_NSGA2
 from metrics import (hypervolume_2d, igd, spacing, build_reference_front,
@@ -121,8 +121,9 @@ def run_scale(job):
     """
     sk, step_m, label, pop_size, max_iter, n_runs, align = job
     t_scale = time.time()
-    sta, gz = resample_profile(align, step_m=step_m)
-    ctx = dict(sta=sta, gz=gz, total_len_m=align["s"][-1])
+    # 与主实验同口径: 准天然地面 + 豁免带(OSM锚定立交/生态区) + 生态隧道常数
+    ctx = fixed_plane_ctx(align, step_m=step_m)
+    sta = ctx["sta"]
     dim = len(sta); lb, ub = np.zeros(dim), np.ones(dim)
 
     # 熵权法权重(基准种群客观确定, 该规模统一)

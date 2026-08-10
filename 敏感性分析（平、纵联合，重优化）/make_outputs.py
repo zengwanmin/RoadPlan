@@ -264,23 +264,65 @@ def fig_D6(d):
 
 def fig_D7(d):
     _fig_reweight(d, "reweight_energy", "wE",
-                  "Energy weight wE (energy-priority, 0.7–1.0)",
-                  "Fig. D7  Re-optimized cost & energy vs energy weight (energy-priority 0.7–1.0)",
+                  "Energy weight wE (energy-priority, 0.8–1.0)",
+                  "Fig. D7  Re-optimized cost & energy vs energy weight (energy-priority 0.8–1.0)",
                   "图D7_重能耗_成本能耗变化曲线_重优化")
 
 
 def fig_D8(d):
     _fig_reweight(d, "reweight_balanced", "wC",
-                  "Cost weight wC (balanced, 0.4–0.6)",
-                  "Fig. D8  Re-optimized cost & energy vs weight (balanced, wC & wE each 0.4–0.6)",
+                  "Cost weight wC (balanced, 0.3–0.7)",
+                  "Fig. D8  Re-optimized cost & energy vs weight (balanced, wC & wE each 0.3–0.7)",
                   "图D8_折中_成本能耗变化曲线_重优化")
+
+
+def fig_D9(d):
+    """图D9: 走廊带半宽敏感性 —— 重优化 C/E(左右轴) + 生态隧道长度(注记)。"""
+    pts = d.get("corridor")
+    if not pts:
+        print("[图] 跳过 图D9: 结果无 corridor (请先运行 rerun_corridor.py)")
+        return
+    pts = sorted(pts, key=lambda p: p["corridor"])
+    x = np.array([p["corridor"] for p in pts])
+    C = np.array([p["C"] for p in pts]) / YI
+    E = np.array([p["E"] for p in pts]) / YI
+    T = np.array([p.get("L_eco_km", np.nan) for p in pts])
+    fig, ax1 = plt.subplots(figsize=(7.8, 5.0))
+    l1, = ax1.plot(x, C, "o-", color="#c44e52", lw=1.9, label="Re-optimized cost C")
+    ax1.set_xlabel("Corridor half-width (m)")
+    ax1.set_ylabel("Re-optimized life-cycle cost C (10^8 RMB)", color="#c44e52")
+    ax1.set_xscale("log")
+    ax1.set_xticks(x); ax1.set_xticklabels([f"{v:.0f}" for v in x])
+    ax2 = ax1.twinx()
+    l2, = ax2.plot(x, E, "s--", color="#4c72b0", lw=1.7, label="Re-optimized energy E")
+    ax2.set_ylabel("Re-optimized life-cycle energy E (10^8 RMB)", color="#4c72b0")
+    for xi, ci, ti in zip(x, C, T):
+        ax1.annotate(f"tunnel {ti:.2f} km", (xi, ci), textcoords="offset points",
+                     xytext=(0, 9), ha="center", fontsize=7.5, color="#555555")
+    ax1.set_title("Fig. D9  Corridor half-width sensitivity (re-optimized, w1=0.65)")
+    ax1.legend(handles=[l1, l2], frameon=False, fontsize=9, loc="best")
+    ax1.grid(alpha=0.3, which="both")
+    _save("图D9_走廊带半宽敏感性_重优化")
+
+
+def table_D9(d):
+    pts = d.get("corridor")
+    if not pts:
+        return
+    rows = [[f"{p['corridor']:.0f}", f"{p['C']/YI:.4f}", f"{p['E']/YI:.4f}",
+             f"{p['L_km']:.3f}", f"{p.get('L_eco_km', float('nan')):.2f}",
+             f"{p['Rmin']:.0f}", f"{p['pen']:.2e}"]
+            for p in sorted(pts, key=lambda p: p["corridor"])]
+    _write_table("表D9_走廊带半宽敏感性",
+                 ["Corridor half-width (m)", "C (10^8 RMB)", "E (10^8 RMB)",
+                  "L (km)", "Eco tunnel (km)", "Rmin (m)", "Penalty"], rows)
 
 
 def main():
     d = load()
     fig_D1(d); fig_D2(d); fig_D3(d); fig_D4(d); fig_D5(d)
-    fig_D6(d); fig_D7(d); fig_D8(d)
-    table_D1(d); table_D2(d); table_D3(d)
+    fig_D6(d); fig_D7(d); fig_D8(d); fig_D9(d)
+    table_D1(d); table_D2(d); table_D3(d); table_D9(d)
     print("[完成] 全部图表已输出到 figures/ 与 tables/")
 
 

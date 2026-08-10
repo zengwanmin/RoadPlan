@@ -11,3 +11,9 @@ venv/
 
 # 运行日志
 *.log
+
+# 冒烟测试产物与临时缓存
+*_smoke.json
+数据/tiles_z14/
+thesis.txt
+~$*.xlsx
