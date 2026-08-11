@@ -104,10 +104,31 @@ cKDTree，检查带内任一中线点 300 m 半径内是否存在障碍物。**�
 无论名称如何对应，7 个桩号带内均存在保留的横向障碍物要素，验证通过，
 无需补充 tertiary 级道路。
 
-## 5. 文件清单
+## 5. 建筑分布数据 `buildings.npz`
+
+- 用途：**仅作可视化图层**（图C9 全图层叠加）与走廊带宽度的数据依据说明，
+  **不进入目标函数、不参与任何成本/能耗计算**。
+- 抓取脚本：`fetch_buildings.py`（Overpass API，`way["building"]` / `relation["building"]`）
+- 内容：`lon`, `lat` 两个数组，共 12789 个建筑轮廓的代表点（质心），非完整多边形轮廓。
+
+### 覆盖不完整声明（重要）
+
+该数据集**不是走廊带内建筑的完整普查**，引用时不得作为"无建筑即可占用"的依据：
+
+1. Overpass 端点对整个 bbox 的 building 查询多次返回 **504 Gateway Timeout**
+   （building 要素量级远大于 highway/railway/waterway），最终以分块查询拼合，
+   部分分块可能仍有缺漏。
+2. OSM 在国内城区的建筑轮廓覆盖度本身参差不齐，郊区与村镇缺失更明显。
+
+因此该图层反映的是**建筑密度的相对分布趋势**，可用于说明"走廊带不应全线取 ±500 m"，
+但不可反推"空白处确无建筑"。
+
+## 6. 文件清单
 
 - `raw_overpass.json` — Overpass 原始返回（备查）
 - `obstacles.npz` — 处理后的障碍物折线集合（numpy compressed）
+- `buildings.npz` — 建筑代表点（可视化用，覆盖不完整，见第 5 节）
 - `query.overpass` — Overpass 查询语句原文
 - `process.py` — 处理与验证脚本（可复现）
+- `fetch_buildings.py` — 建筑数据抓取脚本（可复现）
 - `README.md` — 本文件

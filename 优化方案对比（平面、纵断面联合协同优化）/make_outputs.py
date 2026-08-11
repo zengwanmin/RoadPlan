@@ -13,6 +13,8 @@ make_outputs.py — 由【平纵联合协同优化】结果生成实验三全部
     图C5(优化后边坡稳定性评估云图)
     图C6(平纵联合优化 IJS 收敛曲线)
     图C7(权重 wC 从 0 到 1 变化时优化方案帕累托前沿的变化趋势)
+    图C8(能耗-成本完整Pareto解集)
+    图C9(全图层叠加: DEM + OSM 路网/铁路/水系 + OSM 建筑 + 最终线位 M-C + 桥隧段标注)
 图的横轴/纵轴/图例/图名均为英文。能耗单位 元/日, 桥隧费用 0。
 """
 import os, json, csv
@@ -23,6 +25,7 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager
 
 from params import DESIGN_STD   # 表6.4 竖曲线半径(供图C3竖曲线平滑)
+from alllayers import fig_C9_alllayers   # 图C9 全图层叠加(DEM+OSM+建筑+线位+桥隧)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.path.join(HERE, "results", "joint_results.json")
@@ -404,6 +407,7 @@ def main():
     d = load()
     table_C1(d); table_C2(d); table_C3(d)
     fig_C1(d); fig_C2(d); fig_C3(d); fig_C4(d); fig_C5(d); fig_C6(d); fig_C7(d); fig_C8(d)
+    fig_C9_alllayers(d, _save)
     print("[完成] 全部图表已输出到 figures/ 与 tables/")
 
 
