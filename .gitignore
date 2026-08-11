@@ -17,3 +17,7 @@ venv/
 数据/tiles_z14/
 thesis.txt
 ~$*.xlsx
+
+# optlab/finalexp 走廊带 DEM 大文件(可由脚本重下, 见 DEM_重建说明.md)
+optlab/**/*.npz
+finalexp/**/*.npz
