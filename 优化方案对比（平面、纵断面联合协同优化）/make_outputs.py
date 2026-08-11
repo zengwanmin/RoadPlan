@@ -361,10 +361,49 @@ def fig_C6(d):
     _save("图C6_平纵联合优化收敛曲线")
 
 
+# ---- 图C8: 完整 Pareto 解集(横轴能耗E, 纵轴全生命周期成本C) ----
+def fig_C8(d):
+    sweep = d.get("pareto_sweep", d["pareto"])
+    A, MC = d["M_A"], d["M_C"]
+    ep = d["entropy_point"]
+    budget = (1.0 + ep.get("budget_tol", 0.10)) * A["C"]
+    C = np.array([p["C"] for p in sweep]) / C_YI
+    E = np.array([p["E"] for p in sweep]) / C_YI
+    feas = np.array([p["C"] <= budget for p in sweep])
+    # 预算约束内解的非支配前沿
+    pts = [(e, c) for e, c, f in zip(E, C, feas) if f]
+    front = [(e, c) for e, c in pts
+             if not any((e2 <= e and c2 <= c) and (e2 < e or c2 < c)
+                        for e2, c2 in pts)]
+    front = sorted(front)
+    plt.figure(figsize=(7.8, 5.6))
+    plt.scatter(E[~feas], C[~feas], s=42, marker="x", color="#999999",
+                label="Excluded by budget constraint (elevated-degenerate)")
+    plt.scatter(E[feas], C[feas], s=46, color="#4c72b0", alpha=0.85,
+                label="Feasible weight-scan solutions")
+    if front:
+        fe, fc = zip(*front)
+        plt.plot(fe, fc, "-", color="#4c72b0", lw=1.4, alpha=0.9,
+                 label="Non-dominated front (budget-feasible)")
+    plt.scatter([A["E"] / C_YI], [A["C"] / C_YI], s=130, marker="s",
+                color="#333333", zorder=5, label="M-A existing")
+    plt.scatter([MC["E"] / C_YI], [MC["C"] / C_YI], s=210, marker="*",
+                color="#c44e52", edgecolor="k", zorder=6,
+                label=f"M-C decision point (w1={ep.get('w1_selected', 0):.2f})")
+    plt.axhline(budget / C_YI, ls="--", color="#e8a33d", lw=1.2,
+                label=f"Budget constraint C = {budget/C_YI:.1f}")
+    plt.xlabel("Life-cycle traffic energy E (10^8 RMB)")
+    plt.ylabel("Life-cycle cost C (10^8 RMB)")
+    plt.title("Fig. C8  Full Pareto solution set (energy vs life-cycle cost)")
+    plt.legend(frameon=False, fontsize=9)
+    plt.grid(alpha=0.3)
+    _save("图C8_能耗-成本完整Pareto解集")
+
+
 def main():
     d = load()
     table_C1(d); table_C2(d); table_C3(d)
-    fig_C1(d); fig_C2(d); fig_C3(d); fig_C4(d); fig_C5(d); fig_C6(d); fig_C7(d)
+    fig_C1(d); fig_C2(d); fig_C3(d); fig_C4(d); fig_C5(d); fig_C6(d); fig_C7(d); fig_C8(d)
     print("[完成] 全部图表已输出到 figures/ 与 tables/")
 
 

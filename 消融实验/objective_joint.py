@@ -152,9 +152,25 @@ def make_plane_context(align):
     """由实测线位预计算: 平面控制点、单位左法向、实测里程剖面、高程可调幅度、
     起终点弦与立交带弦投影区间(空间锚定)。"""
     X, Y = align["X"], align["Y"]
-    z = align["ground_z"]
-    # 等弧长重采样 N_CTRL 个平面控制点 + 单位左法向
+    z = align["ground_z"].copy()
     s = np.concatenate([[0], np.cumsum(np.hypot(np.diff(X), np.diff(Y)))])
+    # 【隧道段 GPS 高程修复】白云山隧道内无卫星信号, 数据.xlsx 的 Altitude 为
+    # 设备外插漂移值(实测该段"路面"高出准天然地面 7-17m, 物理不可能)。
+    # 修复: 生态强制隧道区内的连续段, 用洞口两端实测高程线性内插替换。
+    eco_line = dem.eco_mask_xy(X, Y, float(align["lat"][0]),
+                               float(align["lon"][0]))
+    i = 0
+    n = len(z)
+    while i < n:
+        if eco_line[i]:
+            j = i
+            while j + 1 < n and eco_line[j + 1]:
+                j += 1
+            i0, j1 = max(i - 1, 0), min(j + 1, n - 1)
+            z[i:j + 1] = np.interp(s[i:j + 1], [s[i0], s[j1]], [z[i0], z[j1]])
+            i = j + 1
+        else:
+            i += 1
     si = np.linspace(0, s[-1], N_CTRL)
     cx = np.interp(si, s, X); cy = np.interp(si, s, Y)
     tx = np.gradient(cx); ty = np.gradient(cy)

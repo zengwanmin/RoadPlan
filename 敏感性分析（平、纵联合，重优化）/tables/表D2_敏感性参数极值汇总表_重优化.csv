@@ -1,5 +1,5 @@
 ﻿Sensitivity item,Output,Extremum,At parameter
-① Traffic × EV penetration,Max C (10^8 RMB),56.0610,"traffic 10%, EV 5%"
-① Traffic × EV penetration,Max E (10^8 RMB),70.7703,"traffic 10%, EV 10%"
-② Fuel × elec price,Max E (10^8 RMB),26.9601,"fuel 5%, elec 5%"
-③ Fuel- × elec-saving,E drop at 5%&5% (%),6.52,"fuel-save 5%, elec-save 5%"
+① Traffic × EV penetration,Max C (10^8 RMB),20.8202,"traffic 10%, EV 45%"
+① Traffic × EV penetration,Max E (10^8 RMB),66.5589,"traffic 10%, EV 0%"
+② Fuel × elec price,Max E (10^8 RMB),26.2787,"fuel 5%, elec 5%"
+③ Fuel- × elec-saving,E drop at 5%&5% (%),5.13,"fuel-save 5%, elec-save 5%"

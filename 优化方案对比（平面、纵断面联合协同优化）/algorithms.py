@@ -50,13 +50,19 @@ def _tent_init(x0, lb, ub, mu, rng):
 
 def run(fobj, lb, ub, pop0, max_iter, seed,
         use_tent=False, use_levy=False, use_de=False,
-        CR=0.5, levy_beta=1.5, mu_tent=2.0, beta_d=3.0, C0=0.5,
+        CR=0.5, levy_beta=1.5, mu_tent=1.99, beta_d=3.0, C0=0.5,
         record=True):
     """
     JS/IJS主循环。返回 dict(best_x, best_f, curve, nfe)。
       fobj    : 标量目标 f(x)->float (越小越优)
       pop0    : 初始种群 (nPop × dim), 各算法共享同一初始种群保证公平
       seed    : 随机种子(独立运行区分)
+
+    【实现修正声明】
+      mu_tent=1.99(原2.0): μ=2 的 tent 映射在 float64 下等价二进制尾数左移,
+        52 位尾数耗尽后(约54次迭代)轨道精确塌缩为 0 不动点, 全种群后段个体
+        收到同一个全 0 候选; μ=1.99 保持混沌遍历性且无二进制退化。
+      Levy 步长缩放见主循环内注释。
     """
     rng = np.random.default_rng(seed)
     lb = np.asarray(lb, float); ub = np.asarray(ub, float)
@@ -114,9 +120,14 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
                     best_cost = fnew; best_sol = newsol.copy()
 
         # ---- Levy 飞行 (式54-55) + 贪婪选择 ----
+        # 【实现修正】步长按搜索域缩放: step = α·(ub−lb)·levy, α=0.01
+        # (Yang & Deb 2009 布谷鸟搜索标准取值)。原实现无缩放, 每维步长中位
+        # ≈0.26·域宽、P90 超过整个定义域, 插桩实测接受率仅 0.48%——Levy 阶段
+        # 退化为无效随机重启; 缩放后成为围绕当前解的重尾局部探索。
         if use_levy:
             for i in range(nPop):
-                cand = pop[i] + rng.random(dim) * _levy(dim, levy_beta, rng)
+                step = 0.01 * (ub - lb) * _levy(dim, levy_beta, rng)
+                cand = pop[i] + rng.random(dim) * step
                 cand = _simplebounds(cand, lb, ub)
                 fc = fobj(cand); nfe += 1
                 if fc < cost[i]:
@@ -147,11 +158,14 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
                 pop=pop.copy(), cost=cost.copy())
 
 
-# 5个消融变体配置 (对应实验设计方案 表A1)
+# 消融变体配置: 2³ 全因子设计(V1-V5 为原方案, V6-V8 为组合变体, 支持交互效应分解)
 VARIANTS = {
-    "V1_JS":       dict(use_tent=False, use_levy=False, use_de=False),
-    "V2_JS+Tent":  dict(use_tent=True,  use_levy=False, use_de=False),
-    "V3_JS+Levy":  dict(use_tent=False, use_levy=True,  use_de=False),
-    "V4_JS+DE":    dict(use_tent=False, use_levy=False, use_de=True),
-    "V5_IJS":      dict(use_tent=True,  use_levy=True,  use_de=True),
+    "V1_JS":         dict(use_tent=False, use_levy=False, use_de=False),
+    "V2_JS+Tent":    dict(use_tent=True,  use_levy=False, use_de=False),
+    "V3_JS+Levy":    dict(use_tent=False, use_levy=True,  use_de=False),
+    "V4_JS+DE":      dict(use_tent=False, use_levy=False, use_de=True),
+    "V6_JS+Tent+Levy": dict(use_tent=True,  use_levy=True,  use_de=False),
+    "V7_JS+Tent+DE":   dict(use_tent=True,  use_levy=False, use_de=True),
+    "V8_JS+Levy+DE":   dict(use_tent=False, use_levy=True,  use_de=True),
+    "V5_IJS":        dict(use_tent=True,  use_levy=True,  use_de=True),
 }

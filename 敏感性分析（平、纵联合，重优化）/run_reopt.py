@@ -109,24 +109,31 @@ def build_tasks(grids):
     fs = grids["fuel_save"]; es = grids["elec_save"]
     w1s = grids["w1"]
 
+    # 项目①②③: 决策权重固定 w1=0.65(主实验前沿熵权决策点, 与 D9 走廊带同口径)。
+    # 原"每点重算熵权"使权重成为随参数漂移的隐藏自变量(wC 0.18-0.57), 34/126 点
+    # 落入"全线高架"退化解, 响应面被权重效应淹没(清单问题13, 方案A)。
+    W1_FIXED = 0.65
     # 项目①: 交通量 × EV
     for i, rj in enumerate(tr):
         for j, p in enumerate(ev):
-            tasks.append(dict(kind="grid", item=1, idx=(i, j), seed=SEED_BASE + gid,
+            tasks.append(dict(kind="front", item=1, idx=(i, j), seed=SEED_BASE + gid,
+                              w1=W1_FIXED,
                               P=dict(ev=float(p), traffic_growth=float(rj),
                                      fuel_price_growth=0.0, elec_price_growth=0.0,
                                      fuel_save=0.0, elec_save=0.0))); gid += 1
     # 项目②: 油价 × 电价 (EV 固定基准 n2_ev)
     for i, a in enumerate(fp):
         for j, b in enumerate(ep):
-            tasks.append(dict(kind="grid", item=2, idx=(i, j), seed=SEED_BASE + gid,
+            tasks.append(dict(kind="front", item=2, idx=(i, j), seed=SEED_BASE + gid,
+                              w1=W1_FIXED,
                               P=dict(ev=TRAFFIC["n2_ev"], traffic_growth=0.0,
                                      fuel_price_growth=float(a), elec_price_growth=float(b),
                                      fuel_save=0.0, elec_save=0.0))); gid += 1
     # 项目③: 节油率 × 节能率
     for i, a in enumerate(fs):
         for j, b in enumerate(es):
-            tasks.append(dict(kind="grid", item=3, idx=(i, j), seed=SEED_BASE + gid,
+            tasks.append(dict(kind="front", item=3, idx=(i, j), seed=SEED_BASE + gid,
+                              w1=W1_FIXED,
                               P=dict(ev=TRAFFIC["n2_ev"], traffic_growth=0.0,
                                      fuel_price_growth=0.0, elec_price_growth=0.0,
                                      fuel_save=float(a), elec_save=float(b)))); gid += 1

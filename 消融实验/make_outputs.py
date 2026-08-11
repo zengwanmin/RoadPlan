@@ -30,16 +30,30 @@ plt.rcParams["axes.unicode_minus"] = False
 plt.rcParams["figure.dpi"] = 150
 plt.rcParams["font.size"] = 11
 
-# 变体展示名与顺序
-ORDER = ["V1_JS", "V2_JS+Tent", "V3_JS+Levy", "V4_JS+DE", "V5_IJS"]
-# 表格用中文标签
+# 变体展示名与顺序(2³全因子8变体; 结果文件缺组合变体时自动跳过, 向后兼容)
+ORDER = ["V1_JS", "V2_JS+Tent", "V3_JS+Levy", "V4_JS+DE",
+         "V6_JS+Tent+Levy", "V7_JS+Tent+DE", "V8_JS+Levy+DE", "V5_IJS"]
 LABEL = {"V1_JS": "V1 JS(基线)", "V2_JS+Tent": "V2 JS+Tent",
-         "V3_JS+Levy": "V3 JS+Levy", "V4_JS+DE": "V4 JS+DE", "V5_IJS": "V5 IJS(完整)"}
-# 图形用英文标签
+         "V3_JS+Levy": "V3 JS+Levy", "V4_JS+DE": "V4 JS+DE",
+         "V6_JS+Tent+Levy": "V6 JS+Tent+Levy", "V7_JS+Tent+DE": "V7 JS+Tent+DE",
+         "V8_JS+Levy+DE": "V8 JS+Levy+DE", "V5_IJS": "V5 IJS(完整)"}
 LABEL_EN = {"V1_JS": "V1 JS (baseline)", "V2_JS+Tent": "V2 JS+Tent",
-            "V3_JS+Levy": "V3 JS+Levy", "V4_JS+DE": "V4 JS+DE", "V5_IJS": "V5 IJS (full)"}
+            "V3_JS+Levy": "V3 JS+Levy", "V4_JS+DE": "V4 JS+DE",
+            "V6_JS+Tent+Levy": "V6 JS+Tent+Levy", "V7_JS+Tent+DE": "V7 JS+Tent+DE",
+            "V8_JS+Levy+DE": "V8 JS+Levy+DE", "V5_IJS": "V5 IJS (full)"}
 COLOR = {"V1_JS": "#7f7f7f", "V2_JS+Tent": "#1f77b4", "V3_JS+Levy": "#2ca02c",
-         "V4_JS+DE": "#ff7f0e", "V5_IJS": "#d62728"}
+         "V4_JS+DE": "#ff7f0e", "V6_JS+Tent+Levy": "#17becf",
+         "V7_JS+Tent+DE": "#9467bd", "V8_JS+Levy+DE": "#8c564b",
+         "V5_IJS": "#d62728"}
+# 每代函数求值次数(NFE)倍数: 1 + levy(1) + de(1); tent 仅初始化一次
+NFE_MULT = {"V1_JS": 1, "V2_JS+Tent": 1, "V3_JS+Levy": 2, "V4_JS+DE": 2,
+            "V6_JS+Tent+Levy": 2, "V7_JS+Tent+DE": 2, "V8_JS+Levy+DE": 3,
+            "V5_IJS": 3}
+
+
+def _order(d):
+    """结果文件中实际存在的变体(按 ORDER 排序)。"""
+    return [k for k in ORDER if k in d["variants"]]
 
 
 def load():
@@ -56,6 +70,9 @@ def table_A1():
         ("V2", "JS + Tent", "✓", "✗", "✗"),
         ("V3", "JS + Levy", "✗", "✓", "✗"),
         ("V4", "JS + DE", "✗", "✗", "✓"),
+        ("V6", "JS + Tent + Levy", "✓", "✓", "✗"),
+        ("V7", "JS + Tent + DE", "✓", "✗", "✓"),
+        ("V8", "JS + Levy + DE", "✗", "✓", "✓"),
         ("V5", "IJS(完整)", "✓", "✓", "✓"),
     ]
     hdr = ["编号", "变体名称", "Tent初始化", "Levy飞行", "差分进化DE"]
@@ -66,17 +83,37 @@ def table_A1():
 #  表 A2: 各变体性能对比 (最优/均值/标准差/收敛代数/运行时间 + 相对JS提升率)
 # =============================================================
 def table_A2(d):
+    from scipy import stats as _st
     v = d["variants"]
     base = v["V1_JS"]["mean"]
-    hdr = ["变体", "最优F", "均值F", "标准差", "收敛代数", "运行时间(s)", "相对JS提升(%)"]
+    v1_fs = np.array(v["V1_JS"]["best_fs"])
+    v1_final = np.array(d["curves"]["V1_JS"])[-1]
+    hdr = ["变体", "最优F", "均值F", "中位数F", "标准差", "F@100代", "F@300代",
+           "到达JS终值代数", "自身99%收敛代数", "每代NFE(×pop)", "运行时间(s)",
+           "相对JS提升(%)", "Wilcoxon p(vs JS)"]
     rows = []
-    for k in ORDER:
+    for k in _order(d):
         r = v[k]
         impr = (base - r["mean"]) / base * 100.0
+        c = np.array(d["curves"][k])
+        f100 = c[min(100, len(c) - 1)]
+        f300 = c[min(300, len(c) - 1)]
+        hit = np.where(c <= v1_final)[0]
+        ttt = str(hit[0]) if len(hit) else ">500"
+        if k == "V1_JS":
+            pval = "-"
+        else:
+            _, p = _st.mannwhitneyu(v1_fs, np.array(r["best_fs"]),
+                                    alternative="two-sided")
+            pval = f"{p:.3g}"
         rows.append((LABEL[k], f"{r['best']:.4f}", f"{r['mean']:.4f}",
-                     f"{r['std']:.4f}", f"{r['conv_gen_mean']:.1f}",
-                     f"{r['runtime_mean']:.2f}", f"{impr:+.2f}"))
+                     f"{np.median(r['best_fs']):.4f}", f"{r['std']:.4f}",
+                     f"{f100:.3f}", f"{f300:.3f}", ttt,
+                     f"{r['conv_gen_mean']:.1f}", NFE_MULT[k],
+                     f"{r['runtime_mean']:.2f}", f"{impr:+.2f}", pval))
     _write_table("表A2_各变体性能对比表", hdr, rows)
+    # 注: time-to-target 以 V1 中位曲线最终值为共同目标, 消除"相对自身99%"指标
+    # 在不同起点(Tent)与不同收敛深度下的不可比问题(问题清单#1)。
 
 
 def _write_table(name, hdr, rows):
@@ -97,7 +134,7 @@ def _write_table(name, hdr, rows):
 def fig_A1(d):
     plt.figure(figsize=(7.2, 4.8))
     ncut = 200
-    for k in ORDER:
+    for k in _order(d):
         c = np.array(d["curves"][k])[:ncut + 1]
         plt.plot(range(len(c)), c, label=LABEL_EN[k], color=COLOR[k],
                  lw=2.0 if k == "V5_IJS" else 1.5,
@@ -117,11 +154,14 @@ def fig_A2(d):
     # 增量分解: 以均值F为准, 展示单组件相对基线的降幅, 及完整IJS
     base = v["V1_JS"]["mean"]
     comps = [("V1_JS", "JS (baseline)"), ("V2_JS+Tent", "+Tent"),
-             ("V3_JS+Levy", "+Levy"), ("V4_JS+DE", "+DE"), ("V5_IJS", "IJS (full)")]
+             ("V3_JS+Levy", "+Levy"), ("V4_JS+DE", "+DE"),
+             ("V6_JS+Tent+Levy", "+Tent+Levy"), ("V7_JS+Tent+DE", "+Tent+DE"),
+             ("V8_JS+Levy+DE", "+Levy+DE"), ("V5_IJS", "IJS (full)")]
+    comps = [(k, lab) for k, lab in comps if k in v]     # 向后兼容旧结果
     vals = [v[k]["mean"] for k, _ in comps]
     labels = [lab for _, lab in comps]
-    # 优化配色: 采用协调的蓝-青-绿渐变, 完整IJS用强调红
-    bar_colors = ["#4c72b0", "#55a3c9", "#5aa469", "#e8a33d", "#c44e52"]
+    bar_colors = ["#4c72b0", "#55a3c9", "#5aa469", "#e8a33d",
+                  "#17becf", "#9467bd", "#8c564b", "#c44e52"][:len(comps)]
     fig, ax = plt.subplots(figsize=(7.2, 4.8))
     x = np.arange(len(comps))
     bars = ax.bar(x, vals, color=bar_colors, alpha=0.9,
@@ -146,12 +186,13 @@ def fig_A2(d):
 # =============================================================
 def fig_A3(d):
     v = d["variants"]
-    data = [v[k]["best_fs"] for k in ORDER]
+    keys = _order(d)
+    data = [v[k]["best_fs"] for k in keys]
     fig, ax = plt.subplots(figsize=(7.2, 4.8))
     bp = ax.boxplot(data, patch_artist=True, showmeans=True,
-                    tick_labels=[LABEL_EN[k] for k in ORDER],
+                    tick_labels=[LABEL_EN[k] for k in keys],
                     medianprops=dict(color="black"))
-    for patch, k in zip(bp["boxes"], ORDER):
+    for patch, k in zip(bp["boxes"], keys):
         patch.set_facecolor(COLOR[k]); patch.set_alpha(0.6)
     ax.set_ylabel("System benefit F (30 independent runs)")
     ax.set_title("Fig. A3  Box plots of 30 independent runs for each ablation variant")

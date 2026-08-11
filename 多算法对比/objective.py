@@ -77,11 +77,18 @@ def earthwork_cost(sta, gz, design_z, road_width,
 
     use_bridge = np.zeros(len(sta), dtype=bool)
     use_tunnel = np.zeros(len(sta), dtype=bool)
+    # 结构替代 = 成本判据 ∪ 30m 硬判据(《新理念公路设计指南》/论文§3.4.2):
+    #   成本判据: 土方费超过结构单价即改结构(费用封顶, 连续无跳变激励);
+    #   硬判据: 填方>30m 强制按桥、挖方>30m 强制按隧道计费——弥合"成本交叉点
+    #   (桥≈57m/隧≈69m)与 30m 几何判据之间"的计费缝隙, 30m 处费用向上跳变,
+    #   无套利空间(不存在往阈值凑的激励)。
+    h30 = BRIDGE_TUNNEL["fill_height_bridge_m"]
+    d30 = BRIDGE_TUNNEL["cut_depth_tunnel_m"]
     if bridge_cap_per_m is not None:
-        use_bridge = (dz > 0) & (fill_cost_pm > bridge_cap_per_m)
+        use_bridge = (dz > 0) & ((fill_cost_pm > bridge_cap_per_m) | (h > h30))
         fill_cost_pm = np.where(use_bridge, bridge_cap_per_m, fill_cost_pm)
     if tunnel_cap_per_m is not None:
-        use_tunnel = (dz < 0) & (cut_cost_pm > tunnel_cap_per_m)
+        use_tunnel = (dz < 0) & ((cut_cost_pm > tunnel_cap_per_m) | (h > d30))
         cut_cost_pm = np.where(use_tunnel, tunnel_cap_per_m, cut_cost_pm)
 
     if exempt is not None:

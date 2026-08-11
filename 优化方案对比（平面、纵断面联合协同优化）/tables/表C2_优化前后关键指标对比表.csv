@@ -1,8 +1,8 @@
 ﻿Metric,M-A (existing),M-C (optimized),Change (%)
-Length L (km),22.462,22.260,-0.90%
-Earthwork C_TU (10^8 RMB),0.5353,0.7993,+49.31%
-Land acquisition CR (10^8 RMB),0.5049,0.5004,-0.90%
-Life-cycle cost C (10^8 RMB),23.7088,20.4620,-13.69%
-Life-cycle traffic energy E (10^8 RMB),13.9460,13.3034,-4.61%
-Slope hazard Q,3.307,3.318,+0.36%
-Min plane radius (m),-,400,(>=400 OK)
+Length L (km),22.462,22.094,-1.64%
+Earthwork C_TU (10^8 RMB),0.5356,1.4822,+176.76%
+Land acquisition CR (10^8 RMB),0.5049,0.4967,-1.64%
+Life-cycle cost C (10^8 RMB),23.7091,21.3011,-10.16%
+Life-cycle traffic energy E (10^8 RMB),13.9460,12.9392,-7.22%
+Slope hazard Q,3.309,3.385,+2.30%
+Min plane radius (m),-,403,(>=400 OK)
