@@ -1,0 +1,193 @@
+# -*- coding: utf-8 -*-
+"""
+alllayers.py — 图C9: 全图层叠加图(DEM + OSM 路网/铁路/水系 + OSM 建筑 + 最终线位 + 桥隧标注)
+
+把优化结果放回真实地理背景中核验: 优化线位穿过什么地形、是否压占既有路网/铁路/水系、
+是否避开建筑密集区, 以及哪些桩号需要以桥梁/隧道通过。
+
+【图层与数据源】
+  DEM 底图   : 数据/走廊带DEM_z14_ext.npz (AWS Terrain Tiles z14, 约 8.8 m/px, 现状地表)
+  OSM 障碍物 : 数据/OSM走廊带障碍物/obstacles.npz (road/rail/water 折线)
+  OSM 建筑   : 数据/OSM走廊带障碍物/buildings.npz (覆盖不完整, 见该目录 README)
+  线位        : results/joint_results.json 的 M_A(现状) 与 M_C(平纵联合协同优化, 最终方案)
+
+【桥隧判据 — 本分支只有几何判据】
+  填高 > params.BRIDGE_TUNNEL["fill_height_bridge_m"](30 m) -> 桥;
+  挖深 > params.BRIDGE_TUNNEL["cut_depth_tunnel_m"](30 m)   -> 隧。
+  本分支 objective.earthwork_cost 为纯土方模型, 桥隧阈值在 params 中标注为"信息项,
+  不参与 CB", 即成本侧未做结构替代计费, 故图上仅按几何判据标注, 不额外扣除豁免带。
+  若该方案纵断面贴合地面(|设计−地面| 均 < 30 m), 桥隧图层为空 — 属正常结果, 图例会注明。
+  (main 分支的成本模型含结构替代判据与 exempt 豁免带, 其图C9 按与成本模型一致的判据标注,
+   两分支判据不同已分别在图上文字框中声明。)
+
+坐标系: 模型局部笛卡尔(X 东, Y 北, 单位 m, 原点为实测线位首点), 与 data_loader 同一投影。
+"""
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+
+from data_loader import load_alignment
+from params import BRIDGE_TUNNEL
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(os.path.dirname(HERE), "数据")
+DEM_NPZ = os.path.join(DATA_DIR, "走廊带DEM_z14_ext.npz")
+OSM_NPZ = os.path.join(DATA_DIR, "OSM走廊带障碍物", "obstacles.npz")
+BLD_NPZ = os.path.join(DATA_DIR, "OSM走廊带障碍物", "buildings.npz")
+
+R_EARTH = 6378137.0
+LINE_COLOR = {"road": "#777777", "rail": "#7b3fa0", "water": "#2b8cbe"}
+C_BRIDGE = "#e6550d"
+C_TUNNEL = "#54278f"
+
+
+def _lonlat_to_xy(lon, lat, lat0_deg, lon0_deg):
+    """与 data_loader.load_alignment 完全相同的局部平面投影(式3.3-3.4)。"""
+    lat0 = np.radians(lat0_deg)
+    lon0 = np.radians(lon0_deg)
+    x = R_EARTH * np.cos(lat0) * (np.radians(lon) - lon0)
+    y = R_EARTH * (np.radians(lat) - lat0)
+    return x, y
+
+
+def _dem_grid_xy(lat0_deg, lon0_deg):
+    """DEM 栅格每像素中心 -> 局部 XY 网格; 坏点(<-100m)置 nan。"""
+    d = np.load(DEM_NPZ)
+    E = d["elev"].astype(float)
+    z, x0, y0 = int(d["z"]), int(d["x0"]), int(d["y0"])
+    H, W = E.shape
+    n = 2 ** z
+    lon_px = (x0 + (np.arange(W) + 0.5) / 256.0) / n * 360.0 - 180.0
+    ty = (y0 + (np.arange(H) + 0.5) / 256.0) / n
+    lat_px = np.degrees(np.arctan(np.sinh(np.pi * (1.0 - 2.0 * ty))))
+    GLON, GLAT = np.meshgrid(lon_px, lat_px)
+    GX, GY = _lonlat_to_xy(GLON, GLAT, lat0_deg, lon0_deg)
+    return GX, GY, np.where(E < -100.0, np.nan, E)
+
+
+def _runs(mask):
+    """布尔掩膜 -> 连续 True 区段的 (起, 止) 下标对(含止)。"""
+    m = np.asarray(mask, bool)
+    if not m.any():
+        return []
+    edge = np.diff(np.concatenate(([0], m.view(np.int8), [0])))
+    return list(zip(np.flatnonzero(edge == 1), np.flatnonzero(edge == -1) - 1))
+
+
+def _seg_km(mask, sta):
+    """按段中点判定的掩膜覆盖长度(km)。"""
+    m = np.asarray(mask, float)
+    return float(np.sum(0.5 * (m[:-1] + m[1:]) * np.diff(sta))) / 1000.0
+
+
+def structure_masks(scheme):
+    """几何判据: 返回 (use_bridge, use_tunnel) 逐桩号布尔掩膜。"""
+    dz = np.asarray(scheme["design_z"], float) - np.asarray(scheme["gz_new"], float)
+    use_bridge = dz > BRIDGE_TUNNEL["fill_height_bridge_m"]
+    use_tunnel = dz < -BRIDGE_TUNNEL["cut_depth_tunnel_m"]
+    return use_bridge, use_tunnel
+
+
+def fig_C9_alllayers(d, save):
+    """d: joint_results.json 已加载的 dict; save: make_outputs._save 回调。"""
+    C = d["M_C"]
+    align = load_alignment()
+    lat0_deg = float(align["lat"][0])
+    lon0_deg = float(align["lon"][0])
+
+    sta = np.asarray(C["sta"], float)
+    cx = np.asarray(C["plane_x"], float)
+    cy = np.asarray(C["plane_y"], float)
+
+    GX, GY, E = _dem_grid_xy(lat0_deg, lon0_deg)
+    # 坐标对齐自检: 线位必须落在 DEM 覆盖范围内, 否则是投影原点不一致, 直接报错
+    if not (GX.min() <= cx.min() and cx.max() <= GX.max()
+            and GY.min() <= cy.min() and cy.max() <= GY.max()):
+        raise RuntimeError(
+            "线位包围盒超出 DEM 覆盖范围, 疑似投影原点不一致: "
+            f"线位 X[{cx.min():.0f},{cx.max():.0f}] Y[{cy.min():.0f},{cy.max():.0f}] "
+            f"vs DEM X[{GX.min():.0f},{GX.max():.0f}] Y[{GY.min():.0f},{GY.max():.0f}]")
+
+    use_bridge, use_tunnel = structure_masks(C)
+    kmB, kmT = _seg_km(use_bridge, sta), _seg_km(use_tunnel, sta)
+    dz = np.asarray(C["design_z"], float) - np.asarray(C["gz_new"], float)
+    print(f"[自检] 图C9 桥隧标注(几何判据 填>30m/挖>30m): "
+          f"桥 {kmB:.3f} km / 隧 {kmT:.3f} km; "
+          f"设计−地面高差范围 {dz.min():+.1f} ~ {dz.max():+.1f} m")
+
+    fig, ax = plt.subplots(figsize=(15.2, 5.4))
+    # DEM 栅格(1280×3072)、建筑散点与 6002 条 OSM 折线若以矢量写入 PDF 会达 70 MB 以上,
+    # 故 zorder<3 的密集图层在矢量输出中光栅化; 线位/标记/图例仍为矢量。
+    ax.set_rasterization_zorder(3)
+    mesh = ax.pcolormesh(GX, GY, E, cmap="terrain", shading="auto",
+                         alpha=0.60, zorder=0)
+    cb = fig.colorbar(mesh, ax=ax, shrink=0.82, pad=0.01)
+    cb.set_label("Ground elevation (m, current surface)")
+
+    b = np.load(BLD_NPZ)
+    bx, by = _lonlat_to_xy(b["lon"], b["lat"], lat0_deg, lon0_deg)
+    ax.scatter(bx, by, s=2, color="#8b0000", alpha=0.32, linewidths=0, zorder=1)
+
+    o = np.load(OSM_NPZ, allow_pickle=False)
+    ox, oy = _lonlat_to_xy(o["lines_lon"], o["lines_lat"], lat0_deg, lon0_deg)
+    off, kind = o["offsets"], o["kind"]
+    for i in range(len(kind)):
+        sl = slice(off[i], off[i + 1])
+        ax.plot(ox[sl], oy[sl], color=LINE_COLOR.get(str(kind[i]), "#999999"),
+                lw=0.5, alpha=0.55, zorder=2)
+
+    A = d["M_A"]
+    ax.plot(np.asarray(A["plane_x"]), np.asarray(A["plane_y"]),
+            color="#222222", lw=1.5, zorder=4)
+    ax.plot(cx, cy, color="#d62728", lw=2.6, zorder=6)
+
+    # 极短段(<400 m, 在 25 km 幅宽上不足 1 px)另加中点环标以便定位
+    for m, col in ((use_bridge, C_BRIDGE), (use_tunnel, C_TUNNEL)):
+        for i0, i1 in _runs(m):
+            ax.plot(cx[i0:i1 + 1], cy[i0:i1 + 1], color=col, lw=6.0,
+                    solid_capstyle="butt", alpha=0.9, zorder=8)
+            if sta[i1] - sta[i0] < 400.0:
+                mid = (i0 + i1) // 2
+                ax.plot([cx[mid]], [cy[mid]], marker="o", ms=9, mfc="none",
+                        mec=col, mew=2.0, zorder=9)
+
+    ax.scatter([cx[0]], [cy[0]], c="#2ca02c", s=70, zorder=9, edgecolors="k")
+    ax.scatter([cx[-1]], [cy[-1]], c="#8c564b", s=70, zorder=9, edgecolors="k")
+
+    handles = [
+        Line2D([0], [0], color="#d62728", lw=2.6,
+               label=f"M-C joint-optimized ({C['L_km']:.2f} km)"),
+        Line2D([0], [0], color="#222222", lw=1.5,
+               label=f"M-A existing ({A['L_km']:.2f} km)"),
+        Line2D([0], [0], color=C_BRIDGE, lw=6,
+               label=(f"Bridge {kmB:.2f} km" if use_bridge.any()
+                      else "Bridge: none (fill never exceeds 30 m)")),
+        Line2D([0], [0], color=C_TUNNEL, lw=6,
+               label=(f"Tunnel {kmT:.2f} km" if use_tunnel.any()
+                      else "Tunnel: none (cut never exceeds 30 m)")),
+        Line2D([0], [0], color="#777777", lw=2, label="OSM road"),
+        Line2D([0], [0], color="#7b3fa0", lw=2, label="OSM rail"),
+        Line2D([0], [0], color="#2b8cbe", lw=2, label="OSM water"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="#8b0000", ms=6,
+               label=f"Building ({len(bx)} OSM, incomplete coverage)"),
+    ]
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.16),
+              ncol=3, fontsize=8.5, framealpha=0.9)
+
+    # 裁剪到线位包围盒 + 2 km 余量: OSM 折线延伸到 ±15 km, 不裁剪则线位只占画面一薄条
+    mg = 2000.0
+    ax.set_xlim(cx.min() - mg, cx.max() + mg)
+    ax.set_ylim(cy.min() - mg, cy.max() + mg)
+    ax.set_aspect("equal")
+    ax.set_xlabel("Easting X (m)")
+    ax.set_ylabel("Northing Y (m)")
+    ax.set_title("Fig. C9  All-layer overlay: DEM + OSM network + buildings + "
+                 "final alignment M-C with structures")
+    fig.text(0.5, -0.02,
+             "Bridge/tunnel marked by geometric criterion only (fill>30 m / cut>30 m); "
+             "this branch's cost model is pure earthwork with no structure substitution, "
+             f"so empty layers are a valid outcome. Design-vs-ground range "
+             f"{dz.min():+.1f} to {dz.max():+.1f} m.",
+             ha="center", fontsize=7.5)
+    save("图C9_全图层叠加")
