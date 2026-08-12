@@ -8,7 +8,8 @@ alllayers.py — 图C9: 全图层叠加图(DEM + OSM 路网/铁路/水系 + OSM 
 【图层与数据源】
   DEM 底图   : 数据/走廊带DEM_z14_ext.npz (AWS Terrain Tiles z14, 约 8.8 m/px, 现状地表)
   OSM 障碍物 : 数据/OSM走廊带障碍物/obstacles.npz (road/rail/water 折线)
-  OSM 建筑   : 数据/OSM走廊带障碍物/buildings.npz (覆盖不完整, 见该目录 README)
+  OSM 建筑   : 数据/OSM走廊带障碍物/buildings_full.npz (完整轮廓多边形, 22590 个建筑,
+               已与 Overpass `out count` 逐项核对一致, 见该目录 README 第 5 节)
   线位        : results/joint_results.json 的 M_A(现状) 与 M_C(平纵联合协同优化, 最终方案)
 
 【桥隧判据 — 与成本模型完全一致, 不是另立标准】
@@ -26,7 +27,9 @@ alllayers.py — 图C9: 全图层叠加图(DEM + OSM 路网/铁路/水系 + OSM 
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.collections import PolyCollection
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 import dem
 from data_loader import load_alignment
@@ -37,7 +40,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.path.dirname(HERE), "数据")
 DEM_NPZ = os.path.join(DATA_DIR, "走廊带DEM_z14_ext.npz")
 OSM_NPZ = os.path.join(DATA_DIR, "OSM走廊带障碍物", "obstacles.npz")
-BLD_NPZ = os.path.join(DATA_DIR, "OSM走廊带障碍物", "buildings.npz")
+BLD_NPZ = os.path.join(DATA_DIR, "OSM走廊带障碍物", "buildings_full.npz")
 
 R_EARTH = 6378137.0
 LINE_COLOR = {"road": "#777777", "rail": "#7b3fa0", "water": "#2b8cbe"}
@@ -161,8 +164,15 @@ def fig_C9_alllayers(d, save):
     cb.set_label("Ground elevation (m, current surface)")
 
     b = np.load(BLD_NPZ)
-    bx, by = _lonlat_to_xy(b["lon"], b["lat"], lat0_deg, lon0_deg)
-    ax.scatter(bx, by, s=2, color="#8b0000", alpha=0.32, linewidths=0, zorder=1)
+    bpx, bpy = _lonlat_to_xy(b["poly_lon"], b["poly_lat"], lat0_deg, lon0_deg)
+    boff, bring = b["poly_off"], b["poly_ring"]
+    # 只填充外环(内环即天井, 对占压判读无意义)
+    foot = [np.c_[bpx[boff[k]:boff[k + 1]], bpy[boff[k]:boff[k + 1]]]
+            for k in range(len(bring)) if bring[k] == "outer"]
+    ax.add_collection(PolyCollection(foot, facecolors="#8b0000",
+                                     edgecolors="none", alpha=0.72, zorder=1))
+    n_bld = len(b["b_id"])
+    km2 = float(b["b_area_m2"].sum()) / 1e6
 
     o = np.load(OSM_NPZ, allow_pickle=False)
     ox, oy = _lonlat_to_xy(o["lines_lon"], o["lines_lat"], lat0_deg, lon0_deg)
@@ -210,8 +220,8 @@ def fig_C9_alllayers(d, save):
         Line2D([0], [0], color="#777777", lw=2, label="OSM road"),
         Line2D([0], [0], color="#7b3fa0", lw=2, label="OSM rail"),
         Line2D([0], [0], color="#2b8cbe", lw=2, label="OSM water"),
-        Line2D([0], [0], marker="o", color="w", markerfacecolor="#8b0000", ms=6,
-               label=f"Building ({len(bx)} OSM, incomplete coverage)"),
+        Patch(facecolor="#8b0000", edgecolor="none",
+               label=f"Building footprint ({n_bld} OSM, {km2:.1f} km$^2$)"),
     ]
     ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.16),
               ncol=4, fontsize=8.5, framealpha=0.9)
