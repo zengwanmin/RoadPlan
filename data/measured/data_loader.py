@@ -12,11 +12,18 @@ import os
 import numpy as np
 import pandas as pd
 
-# 数据文件绝对路径(所有数据来自 实验/数据/)
-DATA_XLSX = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "数据", "数据.xlsx",
+# 数据文件路径: 兼容两种布局
+#   (a) data 分支 data/measured/       —— 数据.xlsx 与本文件同级
+#   (b) 代码分支 <实验目录>/data_loader.py —— 数据在 ../数据/
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_CANDIDATES = (
+    os.path.join(_HERE, "数据.xlsx"),
+    os.path.join(os.path.dirname(_HERE), "数据", "数据.xlsx"),
 )
+DATA_XLSX = next((p for p in _CANDIDATES if os.path.exists(p)), None)
+if DATA_XLSX is None:
+    raise FileNotFoundError(
+        "未找到实测中线数据 数据.xlsx, 已尝试:\n  " + "\n  ".join(_CANDIDATES))
 
 R_EARTH = 6378137.0  # WGS-84 长半轴 (m)  (bh_line.m)
 

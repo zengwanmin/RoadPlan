@@ -35,7 +35,8 @@ cd data && python3 verify/verify_data.py
 | DEM 高程 | `data/dem/走廊带DEM_z14_ext.npz` | 1280×3072，约 8.78 m/像元 | **是**（新线位地面线） |
 | DEM 准天然地面 | `data/dem/走廊带DEM_z14_ext_natural.npz` | 同上 + 生态掩膜 | **是**（统一土方计费口径、生态强制隧道区） |
 | OSM 障碍物 | `data/osm/obstacles/obstacles.npz` | 6002 条折线 | **是**（立交带空间锚定） |
-| OSM 建筑 | `data/osm/buildings/buildings_full.npz` | 22590 个轮廓，171039 顶点 | **否**（仅可视化与走廊带论证） |
+| OSM 建筑 | `data/osm/buildings/buildings_full.npz` | 22590 个轮廓，171039 顶点 | **否**（可视化 + 走廊带论证 + 密度分区输入） |
+| 建筑密度分区 | `data/osm/buildings/density_tiers_V1.npz` | Tier2 27.29 km²/35 簇；Tier1 62.25 km² | **是**（Tier2 禁行硬约束、Tier1 软抑制；**不计拆迁费**） |
 
 ## 目录结构
 
@@ -46,6 +47,7 @@ data/
 ├── osm/
 │   ├── obstacles/   道路/铁路/水系 + 查询语句 + 原始返回 + 处理脚本
 │   └── buildings/   建筑完整轮廓集 + 抓取/续抓/处理脚本 + 384 块原始响应
+│                    + 密度聚类分区(density_grids / density_tiers_V1 + 脚本)
 ├── measured/     实测中线与现状桥隧统计 + 加载投影脚本
 └── verify/       一键完整性复核
 ```
@@ -59,6 +61,8 @@ data/
 | OSM 立交带验证 | 7 座立交桩号带 **7/7 全部命中**横向障碍物 |
 | OSM 建筑计数核对 | way 22414/22414、relation 177/177、part 397/397 —— **逐项一致** |
 | 建筑快照一致性 | 384 块 `osm_base` 全部同日（已修正镜像旧快照问题） |
+| 密度分区阈值标定 | θ_forbid 0.2111 = 现状线位最大密度 0.1836 × 1.15，**M-A 基准天然可行** |
+| 密度分区走廊带通行性 | ±500 m 无封堵断面，最窄可通 625 m |
 
 局限已在文档 §7 集中列出（DEM 过采样、准天然地面为插值近似、OSM 建筑受数据源
 完备度限制、DEM 南界比标称 bbox 短 555 m 等），便于论文如实声明。

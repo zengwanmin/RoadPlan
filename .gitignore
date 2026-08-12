@@ -15,3 +15,6 @@ venv/
 # 分块抓取的中间缓存: 已归档为 data/osm/buildings/buildings_raw_tiles.tar.gz,
 # 解包后会生成该目录, 不重复入库
 data/osm/buildings/buildings_raw/
+
+# 选型/复现过程生成的图(已在 optlab-finalexp 分支留档, 不在数据分支重复入库)
+data/osm/buildings/figures/
