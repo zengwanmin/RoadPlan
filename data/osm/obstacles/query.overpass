@@ -1,0 +1,7 @@
+[out:json][timeout:60][bbox:23.095,113.159,23.201,113.423];
+(
+  way[highway~"^(motorway|trunk|primary|secondary)$"];
+  way[railway=rail];
+  way[waterway~"^(river|canal)$"];
+);
+out geom;
