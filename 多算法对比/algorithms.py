@@ -51,17 +51,28 @@ def _tent_init(x0, lb, ub, mu, rng):
 def run(fobj, lb, ub, pop0, max_iter, seed,
         use_tent=False, use_levy=False, use_de=False,
         CR=0.5, levy_beta=1.5, mu_tent=1.99, beta_d=3.0, C0=0.5,
-        record=True):
+        tent_chains=10, record=True, track=False):
     """
     JS/IJS主循环。返回 dict(best_x, best_f, curve, nfe)。
       fobj    : 标量目标 f(x)->float (越小越优)
       pop0    : 初始种群 (nPop × dim), 各算法共享同一初始种群保证公平
       seed    : 随机种子(独立运行区分)
+      track   : True 时额外返回机制对齐插桩(待办清单2 问题15):
+        trace = dict(
+          phase_dF   : {main/levy/de: 每代该阶段带来的 best_f 改进量Σ}
+          phase_acc  : {main/levy/de: 每代该阶段候选接受次数}
+          diversity  : 每代种群多样性(个体到质心的平均欧氏距离/√dim)
+          tent_dF    : Tent 初始化替换带来的初始 cost 改进量Σ(标量)
+          tent_n_rep : Tent 替换个体数
+        )
 
     【实现修正声明】
       mu_tent=1.99(原2.0): μ=2 的 tent 映射在 float64 下等价二进制尾数左移,
-        52 位尾数耗尽后(约54次迭代)轨道精确塌缩为 0 不动点, 全种群后段个体
-        收到同一个全 0 候选; μ=1.99 保持混沌遍历性且无二进制退化。
+        52 位尾数耗尽后(约54次迭代)轨道精确塌缩为 0 不动点; μ=1.99 保持混沌
+        遍历性且无二进制退化。
+      Tent 独立链(问题16): 原实现全种群共用一条混沌链(单链条), 插桩实测 61%
+        个体落在同一轨道邻域(同质化); 现每个体持有独立初始值 r0_i, 各自迭代
+        tent_chains 次后作为候选, 消除链条传染。
       Levy 步长缩放见主循环内注释。
     """
     rng = np.random.default_rng(seed)
@@ -71,17 +82,23 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
     cost = np.array([fobj(pop[i]) for i in range(nPop)])
     nfe = nPop
 
-    # ---- Tent 混沌映射初始化 (式47): 生成混沌序列择优替换 ----
+    trace = dict(phase_dF={"main": [], "levy": [], "de": []},
+                 phase_acc={"main": [], "levy": [], "de": []},
+                 diversity=[], tent_dF=0.0, tent_n_rep=0) if track else None
+
+    # ---- Tent 混沌映射初始化 (式47, 每个体独立链) ----
     if use_tent:
-        r0 = rng.random(dim)
-        for i in range(nPop):
-            p1 = r0 >= 0.5
-            r0 = np.where(p1, mu_tent * (1 - r0), mu_tent * r0)
+        r0 = rng.random((nPop, dim))          # 每个体独立初始值(问题16)
+        for _ in range(tent_chains):
+            r0 = np.where(r0 >= 0.5, mu_tent * (1 - r0), mu_tent * r0)
             r0 = np.clip(r0, 0, 1)
-            cand = r0 * (ub - lb) + lb
-            cand = _simplebounds(cand, lb, ub)
+        for i in range(nPop):
+            cand = _simplebounds(r0[i] * (ub - lb) + lb, lb, ub)
             fc = fobj(cand); nfe += 1
             if fc < cost[i]:
+                if track:
+                    trace["tent_dF"] += float(cost[i] - fc)
+                    trace["tent_n_rep"] += 1
                 cost[i] = fc; pop[i] = cand
 
     idx = np.argmin(cost)
@@ -93,6 +110,7 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
         bidx = np.argmin(cost)
         best_sol = pop[bidx].copy(); best_cost = cost[bidx]
 
+        acc_main = 0; f_before = best_cost
         for i in range(nPop):
             # 时间控制函数 c(t) (式53): Ar=(1-t/Max)*(2*rand-1)
             Ar = (1 - it / max_iter) * (2 * rng.random() - 1)
@@ -116,8 +134,12 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
             fnew = fobj(newsol); nfe += 1
             if fnew < cost[i]:
                 pop[i] = newsol; cost[i] = fnew
+                acc_main += 1
                 if fnew < best_cost:
                     best_cost = fnew; best_sol = newsol.copy()
+        if track:
+            trace["phase_dF"]["main"].append(float(f_before - best_cost))
+            trace["phase_acc"]["main"].append(acc_main)
 
         # ---- Levy 飞行 (式54-55) + 贪婪选择 ----
         # 【实现修正】步长按搜索域缩放: step = α·(ub−lb)·levy, α=0.01
@@ -125,6 +147,7 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
         # ≈0.26·域宽、P90 超过整个定义域, 插桩实测接受率仅 0.48%——Levy 阶段
         # 退化为无效随机重启; 缩放后成为围绕当前解的重尾局部探索。
         if use_levy:
+            acc_levy = 0; f_before = best_cost
             for i in range(nPop):
                 step = 0.01 * (ub - lb) * _levy(dim, levy_beta, rng)
                 cand = pop[i] + rng.random(dim) * step
@@ -132,11 +155,16 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
                 fc = fobj(cand); nfe += 1
                 if fc < cost[i]:
                     pop[i] = cand; cost[i] = fc
+                    acc_levy += 1
                     if fc < best_cost:
                         best_cost = fc; best_sol = cand.copy()
+            if track:
+                trace["phase_dF"]["levy"].append(float(f_before - best_cost))
+                trace["phase_acc"]["levy"].append(acc_levy)
 
         # ---- 差分进化 DE (式56-58) + 贪婪选择 ----
         if use_de:
+            acc_de = 0; f_before = best_cost
             for i in range(nPop):
                 r1, r2 = rng.integers(nPop), rng.integers(nPop)
                 mutant = pop[i] + rng.random(dim) * (pop[r1] - pop[r2])   # 变异(式56)
@@ -146,16 +174,28 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
                 fc = fobj(cand); nfe += 1
                 if fc < cost[i]:                                           # 选择(式58)
                     pop[i] = cand; cost[i] = fc
+                    acc_de += 1
                     if fc < best_cost:
                         best_cost = fc; best_sol = cand.copy()
+            if track:
+                trace["phase_dF"]["de"].append(float(f_before - best_cost))
+                trace["phase_acc"]["de"].append(acc_de)
 
         if best_cost < best_f:
             best_f = best_cost; best_x = best_sol.copy()
         if record:
             curve.append(best_f)
+        if track:
+            centroid = pop.mean(axis=0)
+            trace["diversity"].append(
+                float(np.mean(np.linalg.norm(pop - centroid, axis=1))
+                      / np.sqrt(dim)))
 
-    return dict(best_x=best_x, best_f=best_f, curve=np.array(curve), nfe=nfe,
-                pop=pop.copy(), cost=cost.copy())
+    out = dict(best_x=best_x, best_f=best_f, curve=np.array(curve), nfe=nfe,
+               pop=pop.copy(), cost=cost.copy())
+    if track:
+        out["trace"] = trace
+    return out
 
 
 # 消融变体配置: 2³ 全因子设计(V1-V5 为原方案, V6-V8 为组合变体, 支持交互效应分解)

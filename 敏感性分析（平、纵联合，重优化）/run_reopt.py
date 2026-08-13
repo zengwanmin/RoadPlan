@@ -42,6 +42,8 @@ SEED_BASE = 20250722   # 复现用固定种子基数
 
 # --- worker 进程内的全局(由 initializer 设定, 兼容 macOS spawn) ---
 _PC = None
+_PC_EXT = 75.0    # 当前 _PC 对应的交叉桥延伸 E_ext(项目⑨切换时重建)
+_ALIGN = None
 _DIM = DIM        # 与主实验联合模型一致(平面模态 N_MODE + 纵断面 M_PROF)
 _LB = np.zeros(_DIM); _UB = np.ones(_DIM)
 POP_SIZE = ALGO["pop_size"]      # 主进程默认; worker 由 initargs 覆盖
@@ -51,7 +53,8 @@ MAX_ITER = ALGO["max_iter"]
 def _init_worker(align, pop_size, max_iter):
     """worker 进程初始化: 建 pc(含 cKDTree) + 设定 pop/iter, 每进程只做一次。
     (macOS 用 spawn, 子进程会重新 import 本模块, 故 pop/iter 必须显式下发。)"""
-    global _PC, POP_SIZE, MAX_ITER
+    global _PC, POP_SIZE, MAX_ITER, _ALIGN
+    _ALIGN = align
     _PC = make_plane_context(align)
     POP_SIZE = pop_size
     MAX_ITER = max_iter
@@ -71,12 +74,21 @@ def _optimize_one(task):
             'front' -> 指定权重 w1 的 Pareto 前沿点(P 为基准)
     返回记录 dict(含 C,E,L,Rmin,pen,ml,kwh,wC,wE 及 task 索引)。
     """
-    pc = _PC
+    global _PC, _PC_EXT
     P = task["P"]; seed = task["seed"]
     # 走廊带半宽: 项目⑧逐任务切换, 其余任务恢复主实验默认 ±500m。
     # worker 进程会被复用, 故每个任务开始时都必须显式设置(进程内全局)。
     import objective_joint as OJ
     OJ.set_corridor(task.get("corridor", 500.0))
+    # 项目⑨: 交叉桥延伸长度 E_ext 敏感性(问题21 参数, 默认每侧 75m)。
+    # 改 ext 会同时改变现状线校准(匝道常数), 故须重建平面上下文(进程内缓存)。
+    ext = float(task.get("ext_m", 75.0))
+    if abs(_PC_EXT - ext) > 1e-9:
+        from params import BRIDGE_TUNNEL as _BT
+        _BT["crossing_trigger"]["ext_m"] = ext
+        _PC = make_plane_context(_ALIGN)
+        _PC_EXT = ext
+    pc = _PC
     base = _base_pop(seed)
     # 用该点参数化目标在初始种群上算 (C,E) -> 熵权法客观权重(式5.3-5.4)
     C0 = np.empty(POP_SIZE); E0 = np.empty(POP_SIZE)
@@ -97,6 +109,7 @@ def _optimize_one(task):
                 ml=float(info["ml"]), kwh=float(info["kwh"]),
                 L_eco_km=float(info["L_eco_km"]),
                 corridor=float(task.get("corridor", 500.0)),
+                ext_m=float(task.get("ext_m", 75.0)),
                 wC=float(wC), wE=float(wE),
                 P={k: float(v) for k, v in P.items()})
 
@@ -162,6 +175,13 @@ def build_tasks(grids):
                           P=dict(ev=TRAFFIC["n2_ev"], traffic_growth=0.0,
                                  fuel_price_growth=0.0, elec_price_growth=0.0,
                                  fuel_save=0.0, elec_save=0.0))); gid += 1
+    # 项目⑨: 交叉桥延伸 E_ext 敏感性(问题21, 每侧 50/75/100m; w1 与 D9 同口径)
+    for k, ex in enumerate(grids.get("ext", [])):
+        tasks.append(dict(kind="front", item=9, idx=(k,), seed=SEED_BASE + gid,
+                          w1=0.65, ext_m=float(ex),
+                          P=dict(ev=TRAFFIC["n2_ev"], traffic_growth=0.0,
+                                 fuel_price_growth=0.0, elec_price_growth=0.0,
+                                 fuel_save=0.0, elec_save=0.0))); gid += 1
     return tasks
 
 
@@ -189,7 +209,8 @@ def main():
                      w1_cost=[0.7, 0.85, 1.0],       # 图D6 重成本
                      w1_energy=[0.0, 0.1, 0.2],      # 图D7 重能耗(能耗比例0.8-1.0)
                      w1_balanced=[0.3, 0.5, 0.7],    # 图D8 折中(占比0.3-0.7)
-                     corridor=[250, 2500])           # 图D9 走廊带(冒烟两端)
+                     corridor=[250, 2500],           # 图D9 走廊带(冒烟两端)
+                     ext=[50, 100])                  # 图D10 E_ext(冒烟两端)
         print(f"[冒烟] iter={MAX_ITER}")
     else:
         # 用户选定: EV 轴加密 (① 6×21, ② 6×6, ③ 6×6, ④ 9) = 207 点
@@ -206,6 +227,7 @@ def main():
             w1_energy=list(np.linspace(0.0, 0.2, 5)),    # 图D7 重能耗: 能耗比例 0.8-1.0(即 wC 0-0.2)
             w1_balanced=list(np.linspace(0.3, 0.7, 9)),  # 图D8 折中: 成本/能耗比例各 0.3-0.7
             corridor=[200, 250, 500, 1000, 2000, 2500],  # 图D9 走廊带半宽敏感性(m)
+            ext=[50, 75, 100],               # 图D10 交叉桥每侧延伸 E_ext(m, 问题21)
         )
 
     tasks = build_tasks(grids)
@@ -313,6 +335,9 @@ def _assemble(recs, tasks, grids, align):
     reweight_balanced = _sweep(7, "w1_balanced")  # 折中 wC 0.3-0.7
 
     # 项目⑧ 走廊带敏感性(图D9): 按半宽升序整理
+    ext_sens = [dict(ext_m=r["ext_m"], C=r["C"], E=r["E"],
+                     L_km=r["L_km"], pen=r["pen"])
+                for r in sorted(by.get(9, []), key=lambda r: r["ext_m"])]
     corridor = [dict(corridor=r["corridor"], C=r["C"], E=r["E"],
                      L_km=r["L_km"], Rmin=r["Rmin"], pen=r["pen"],
                      L_eco_km=r.get("L_eco_km", float("nan")),
@@ -331,7 +356,8 @@ def _assemble(recs, tasks, grids, align):
                 kwh_base=(base_rec["kwh"] if base_rec else float("nan")))
     return dict(meta=meta, item1=item1, item2=item2, item3=item3, item4=item4,
                 reweight_cost=reweight_cost, reweight_energy=reweight_energy,
-                reweight_balanced=reweight_balanced, corridor=corridor)
+                reweight_balanced=reweight_balanced, corridor=corridor,
+                ext_sens=ext_sens)
 
 
 if __name__ == "__main__":

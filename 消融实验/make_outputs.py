@@ -208,6 +208,175 @@ def _save(name):
     print(f"[图] {name}")
 
 
+# =============================================================
+#  机制对齐指标(问题15, 预注册定义): 表A3 + 图A4-A6
+#  数据源: results/ablation_traces.json (run(track=True), 前10种子)
+# =============================================================
+TRACES = os.path.join(HERE, "results", "ablation_traces.json")
+
+
+def load_traces():
+    if not os.path.exists(TRACES):
+        print("[跳过] 无 ablation_traces.json(旧结果), 表A3/图A4-A6 不生成")
+        return None
+    with open(TRACES, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _escape_stats(tr, stall=20):
+    """
+    Levy 停滞逃逸率(预注册定义): best_f 连续 stall 代无改进的停滞期后,
+    第一个产生改进的阶段若为 levy 则记一次逃逸。
+    返回 (逃逸次数, 停滞期总数, levy改进代号列表)。
+    """
+    phases = ["main", "levy", "de"]
+    dF = {p: np.array(tr["phase_dF"].get(p, [])) for p in phases}
+    ngen = len(dF["main"])
+    imp = {p: (dF[p] > 1e-15) if len(dF[p]) else np.zeros(ngen, bool)
+           for p in phases}
+    any_imp = np.zeros(ngen, bool)
+    for p in phases:
+        if len(imp[p]) == ngen:
+            any_imp |= imp[p]
+    esc, total = 0, 0
+    run_len = 0
+    for g in range(ngen):
+        if any_imp[g]:
+            if run_len >= stall:
+                total += 1
+                # 该代内的阶段顺序: main -> levy -> de, 归因给最先改进者
+                if imp["main"][g]:
+                    pass
+                elif len(imp["levy"]) == ngen and imp["levy"][g]:
+                    esc += 1
+            run_len = 0
+        else:
+            run_len += 1
+    levy_gens = list(np.where(imp["levy"])[0]) if len(dF["levy"]) else []
+    return esc, total, levy_gens
+
+
+def table_A3(d, td):
+    """表A3: 机制对齐指标(每变体对含该机制的项计算, 值为10个插桩种子的中位数)。"""
+    tr_all = td["traces"]
+    pop = d["meta"]["pop_size"]
+    hdr = ["变体", "Tent初始替换数/200", "Tent初始ΔF(总)",
+           "Levy逃逸率(停滞≥20代)", "Levy相对ΔF占比(%)",
+           "DE相对ΔF占比(%)", "DE效率ΔF/kNFE", "尾段100代DEΔF",
+           "多样性@100代", "多样性@末代"]
+    rows = []
+    for k in _order(d):
+        trs = tr_all.get(k, [])
+        if not trs:
+            continue
+        def med(fn):
+            vals = [fn(t) for t in trs]
+            vals = [v for v in vals if v is not None]
+            return float(np.median(vals)) if vals else float("nan")
+        has_tent = "Tent" in k or k == "V5_IJS"
+        has_levy = "Levy" in k or k == "V5_IJS"
+        has_de = "DE" in k or k == "V5_IJS"
+        n_rep = med(lambda t: t["tent_n_rep"]) if has_tent else None
+        t_dF = med(lambda t: t["tent_dF"]) if has_tent else None
+
+        def tot(t, p):
+            a = t["phase_dF"].get(p, [])
+            return float(np.sum(a)) if a else 0.0
+
+        def share(t, p):
+            s = sum(tot(t, q) for q in ("main", "levy", "de"))
+            return 100.0 * tot(t, p) / s if s > 0 else 0.0
+        esc_rate = None
+        if has_levy:
+            def _er(t):
+                e, n, _ = _escape_stats(t)
+                return e / n if n else None
+            esc_rate = med(_er)
+        levy_share = med(lambda t: share(t, "levy")) if has_levy else None
+        de_share = med(lambda t: share(t, "de")) if has_de else None
+        de_eff = med(lambda t: tot(t, "de") / (len(t["phase_dF"]["de"]) * pop / 1000.0)
+                     ) if has_de else None
+        de_tail = med(lambda t: float(np.sum(t["phase_dF"]["de"][-100:]))
+                      ) if has_de else None
+        div = trs[0]["diversity"]
+        div100 = med(lambda t: t["diversity"][min(99, len(t["diversity"]) - 1)])
+        divend = med(lambda t: t["diversity"][-1])
+        fmt = lambda v, p=4: ("-" if v is None or (isinstance(v, float) and np.isnan(v))
+                              else f"{v:.{p}f}")
+        rows.append((LABEL[k], fmt(n_rep, 0), fmt(t_dF, 3),
+                     fmt(esc_rate, 2), fmt(levy_share, 1),
+                     fmt(de_share, 1), fmt(de_eff, 4), fmt(de_tail, 4),
+                     fmt(div100, 4), fmt(divend, 4)))
+    _write_table("表A3_机制对齐指标", hdr, rows)
+
+
+def fig_A4(d, td):
+    """图A4: 阶段改进归因——各阶段累计 ΔF 随代数(中位种子)。"""
+    tr_all = td["traces"]
+    keys = [k for k in ("V5_IJS", "V8_JS+Levy+DE", "V4_JS+DE", "V3_JS+Levy")
+            if k in tr_all and tr_all[k]]
+    fig, axes = plt.subplots(1, len(keys), figsize=(4.0 * len(keys), 4.2),
+                             sharey=False)
+    if len(keys) == 1:
+        axes = [axes]
+    for ax, k in zip(axes, keys):
+        t = tr_all[k][0]
+        for p, c, lab in (("main", "#7f7f7f", "JS main"),
+                          ("levy", "#2ca02c", "Levy"),
+                          ("de", "#ff7f0e", "DE")):
+            a = t["phase_dF"].get(p, [])
+            if a:
+                ax.plot(np.cumsum(a), color=c, lw=1.6, label=lab)
+        ax.set_title(LABEL_EN[k], fontsize=10)
+        ax.set_xlabel("Iteration"); ax.grid(alpha=0.3)
+    axes[0].set_ylabel("Cumulative best-F improvement")
+    axes[0].legend(frameon=False, fontsize=9)
+    fig.suptitle("Fig. A4  Per-phase attribution of best-F improvement (tracked seed)")
+    _save("图A4_阶段改进归因")
+
+
+def fig_A5(d, td):
+    """图A5: 种群多样性轨迹(质心平均距离/√dim, 插桩种子中位)。"""
+    tr_all = td["traces"]
+    plt.figure(figsize=(7.2, 4.8))
+    for k in _order(d):
+        trs = tr_all.get(k, [])
+        if not trs:
+            continue
+        D = np.array([t["diversity"] for t in trs], dtype=float)
+        med = np.median(D, axis=0)
+        plt.plot(med, label=LABEL_EN[k], color=COLOR[k],
+                 lw=2.0 if k == "V5_IJS" else 1.2,
+                 ls="-" if k in ("V1_JS", "V5_IJS") else "--")
+    plt.xlabel("Iteration"); plt.ylabel("Population diversity (mean dist to centroid / $\\sqrt{dim}$)")
+    plt.title("Fig. A5  Population diversity trajectories")
+    plt.legend(frameon=False, fontsize=8); plt.grid(alpha=0.3)
+    _save("图A5_多样性轨迹")
+
+
+def fig_A6(d, td):
+    """图A6: Levy 改进时机分布(含 Levy 的变体, 全部插桩种子合并)。"""
+    tr_all = td["traces"]
+    keys = [k for k in _order(d)
+            if ("Levy" in k or k == "V5_IJS") and tr_all.get(k)]
+    fig, ax = plt.subplots(figsize=(7.2, 4.4))
+    ngen = d["meta"]["max_iter"]
+    bins = np.linspace(0, ngen, 26)
+    for k in keys:
+        gens = []
+        for t in tr_all[k]:
+            _, _, lg = _escape_stats(t)
+            gens.extend(lg)
+        if gens:
+            ax.hist(gens, bins=bins, histtype="step", lw=1.8,
+                    label=LABEL_EN[k], color=COLOR[k], density=True)
+    ax.set_xlabel("Iteration of Levy-phase improvement")
+    ax.set_ylabel("Density")
+    ax.set_title("Fig. A6  Timing distribution of Levy-phase improvements")
+    ax.legend(frameon=False, fontsize=9); ax.grid(alpha=0.3)
+    _save("图A6_Levy改进时机分布")
+
+
 def main():
     d = load()
     print(f"[权重] wC={d['meta']['wC']:.4f} wE={d['meta']['wE']:.4f} "
@@ -217,6 +386,12 @@ def main():
     fig_A1(d)
     fig_A2(d)
     fig_A3(d)
+    td = load_traces()
+    if td is not None:
+        table_A3(d, td)
+        fig_A4(d, td)
+        fig_A5(d, td)
+        fig_A6(d, td)
     print("[完成] 全部图表已输出到 figures/ 与 tables/")
 
 

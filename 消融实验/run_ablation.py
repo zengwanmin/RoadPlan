@@ -73,13 +73,16 @@ def main():
     C_ref, E_ref = float(C0.mean()), float(E0.mean())
     print(f"[熵权法] wC={wC:.4f}, wE={wE:.4f}; C_ref={C_ref/1e8:.3f}亿, E_ref={E_ref:.0f}")
 
-    # ---- 3. 5变体 × 30次独立运行 ----
+    # ---- 3. 8变体 × 30次独立运行(前 N_TRACK 次带机制插桩, 问题15) ----
+    N_TRACK = 3 if args.smoke else 10
     all_res = {}
     curves = {}     # 每变体保存一条代表性收敛曲线(取中位run)
+    traces = {}     # {vname: [trace_dict × N_TRACK]} 机制对齐插桩(问题15)
     for vname, cfg in VARIANTS.items():
         tv = time.time()
         best_fs, conv_gens, runtimes = [], [], []
         run_curves = []
+        v_traces = []
         best_x_overall, best_f_overall = None, np.inf
         for r in range(n_runs):
             # 每次独立运行用不同种子生成独立初始种群(公平: 同一run内5变体共享)
@@ -87,15 +90,19 @@ def main():
             pop0 = rng.random((pop_size, dim))
             f = make_scalar_fn(ctx, wC, wE, C_ref, E_ref)
             t0 = time.time()
-            res = run(f, lb, ub, pop0, max_iter=max_iter, seed=1000 + r, **cfg)
+            res = run(f, lb, ub, pop0, max_iter=max_iter, seed=1000 + r,
+                      track=(r < N_TRACK), **cfg)
             rt = time.time() - t0
             best_fs.append(res["best_f"])
             conv_gens.append(convergence_gen(res["curve"]))
             runtimes.append(rt)
             run_curves.append(res["curve"])
+            if r < N_TRACK:
+                v_traces.append(res["trace"])
             if res["best_f"] < best_f_overall:
                 best_f_overall = res["best_f"]; best_x_overall = res["best_x"]
         best_fs = np.array(best_fs)
+        traces[vname] = v_traces
         # 代表性曲线: 取 best_f 中位数对应的那次run
         med_idx = int(np.argsort(best_fs)[len(best_fs) // 2])
         curves[vname] = np.array(run_curves[med_idx]).tolist()
@@ -128,7 +135,11 @@ def main():
     fn = "ablation_results_smoke.json" if args.smoke else "ablation_results.json"
     with open(os.path.join(RESULTS, fn), "w", encoding="utf-8") as fp:
         json.dump(out, fp, ensure_ascii=False, indent=2)
-    print(f"[完成] 结果已保存 results/{fn}  总耗时 {time.time()-t_all:.1f}s")
+    # 机制对齐插桩(问题15)单独保存(体积大, 供 make_outputs 计算表A3/图A4-A6)
+    tfn = "ablation_traces_smoke.json" if args.smoke else "ablation_traces.json"
+    with open(os.path.join(RESULTS, tfn), "w", encoding="utf-8") as fp:
+        json.dump(dict(n_track=N_TRACK, traces=traces), fp)
+    print(f"[完成] 结果已保存 results/{fn} + results/{tfn}  总耗时 {time.time()-t_all:.1f}s")
 
 
 if __name__ == "__main__":

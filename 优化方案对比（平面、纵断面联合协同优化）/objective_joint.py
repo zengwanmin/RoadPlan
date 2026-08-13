@@ -185,12 +185,24 @@ def make_plane_context(align):
     un = float(np.hypot(ux, uy)); ux, uy = ux / un, uy / un
     t_meas = (X - X[0]) * ux + (Y - Y[0]) * uy       # 实测点弦投影
     bands = _ic_bands_from_osm(X, Y, s, t_meas)
+    # ---- 交叉桥内生口径(问题21)的现状线校准: 匝道功能费常数 + 基线诊断 ----
+    import crossings as _cr
+    lat0 = float(align["lat"][0]); lon0 = float(align["lon"][0])
+    cr0 = _cr.detect_crossings(X, Y, lat0, lon0)
+    eco_at = np.interp(cr0["s"], s, eco_line.astype(float)) > 0.5
+    iv0, L0m = _cr.bridge_intervals(cr0, keep=~eco_at)
+    ramp_cost, L_ic_main_km = _cr.ramp_cost_from_baseline(iv0)
     return dict(cx=cx, cy=cy, nx=nx, ny=ny, gz_meas=z,
                 s_meas=s,          # 实测中线累计里程(m), 供按里程对应取地面高程
-                lat0=float(align["lat"][0]), lon0=float(align["lon"][0]),
+                lat0=lat0, lon0=lon0,
                 X=X, Y=Y, L0=L0, amp=amp,
                 chord=(float(X[0]), float(Y[0]), ux, uy),
-                ic_bands=bands)
+                ic_bands=bands,
+                ramp_cost=float(ramp_cost),
+                baseline_cross=dict(intervals=iv0,
+                                    L_cross_km=L0m / 1000.0,
+                                    L_ic_main_km=float(L_ic_main_km),
+                                    n_cross=int(len(cr0["s"]))))
 
 
 N_MODE = 50          # 平面偏移的低频正弦模态个数(决策变量数)
@@ -228,6 +240,21 @@ def set_corridor(half_w_m):
     CORRIDOR_HALF_W = float(half_w_m)
     PLANE_MODE_A1 = CORRIDOR_HALF_W
     MODE_AMPS = _mode_amps()
+
+
+def set_profile_step(step_m):
+    """
+    运行时切换纵断面变坡点步长(供多算法对比 PJ1-PJ6 联合规模阶梯调用,
+    待办清单2 问题19)。同步更新 M_PROF / DIM; 平面模态数 N_MODE 固定不变
+    (规模变量只取纵断面步长, 避免双变量混淆)。
+    多进程下每个 worker 在任务开始时调用一次即可(进程内全局)。
+    """
+    global STEP_PROFILE_CTRL_M, STEP_PROFILE_M, M_PROF, DIM_PROF, DIM
+    STEP_PROFILE_CTRL_M = float(step_m)
+    STEP_PROFILE_M = STEP_PROFILE_CTRL_M
+    M_PROF = _n_stations(STEP_PROFILE_CTRL_M)
+    DIM_PROF = M_PROF
+    DIM = DIM_PLANE + DIM_PROF
 
 
 def delta_from_modes(coef_norm):
@@ -313,13 +340,21 @@ def decode_joint(x, pc):
 
     # 生态强制隧道区掩膜(白云山, dem.eco_mask): 穿越段按隧道计费、土方豁免
     eco = dem.eco_mask_xy(x_sta, y_sta, pc["lat0"], pc["lon0"])
-    # 立交带掩膜(空间锚定): 评价桩号弦投影落入 7 座立交的弦区间 -> 土方豁免
+    # 立交带掩膜(空间锚定): 仅作诊断输出(豁免与计费已由交叉触发桥区间接管)
     x0c, y0c, ux, uy = pc["chord"]
     t_sta = (x_sta - x0c) * ux + (y_sta - y0c) * uy
     ic = np.zeros(len(sta), dtype=bool)
     for ta, tb in pc["ic_bands"]:
         ic |= (t_sta >= ta) & (t_sta <= tb)
-    exempt = eco | ic
+    # ---- 交叉触发跨越桥(问题21): OSM 障碍物交叉 -> 桥区间(几何内生) ----
+    import crossings as _cr
+    cross = _cr.detect_crossings(xx, yy, pc["lat0"], pc["lon0"])
+    # 生态隧道区内的交叉不设桥(隧道下穿, 优先级更高)
+    keep = np.interp(cross["s"], sta, eco.astype(float)) <= 0.5 \
+        if len(cross["s"]) else np.zeros(0, dtype=bool)
+    bridge_iv, L_cross_m = _cr.bridge_intervals(cross, keep=keep)
+    bridge = _cr.mask_from_intervals(sta, bridge_iv)
+    exempt = eco | bridge
     # 生态隧道穿越长度(km): 按段中点判定
     eco_seg = 0.5 * (eco[:-1].astype(float) + eco[1:].astype(float))
     dL_sta = np.diff(sta)
@@ -349,7 +384,9 @@ def decode_joint(x, pc):
                 gz_new=gz_new, design_z=design_z,
                 sta_ctrl=sta_ctrl, gz_ctrl=gz_ctrl,
                 design_z_ctrl=design_z_ctrl,
-                eco=eco, ic=ic, exempt=exempt, L_eco_km=L_eco_km)
+                eco=eco, ic=ic, exempt=exempt, L_eco_km=L_eco_km,
+                cross=cross, cross_keep=keep, bridge_iv=bridge_iv,
+                bridge=bridge, L_cross_km=L_cross_m / 1000.0)
 
 
 def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
@@ -386,7 +423,9 @@ def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
         tunnel_cap_per_m=BRIDGE_TUNNEL["tunnel_cost_per_km"] / 1000.0,
         exempt=d["exempt"])
     C_PING, cinfo = lcc_ping(L_new, sta, gz_new, design_z,
-                             L_eco_tunnel_km=d["L_eco_km"], exempt=d["exempt"])
+                             L_eco_tunnel_km=d["L_eco_km"], exempt=d["exempt"],
+                             L_bridge_km=d["L_cross_km"],
+                             ramp_cost=pc["ramp_cost"])
     C = C_PING + C_TU
     _t = LCC["analysis_years"]; _ru = LCC["bank_rate"]
     if rj > 0.0:
@@ -428,10 +467,27 @@ def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
     R = d["R"]
     rel_R = np.maximum(0.0, (Rmin_req - R) / Rmin_req)             # 平曲线半径(表3.2)
     grades = _grades(sta, design_z)
-    dg_lim = 0.03
+    # 坡差限值按变坡点步长归一(3e-4/m, 与 objective.py 同口径): 100m 步长时为
+    # 0.03(原值不变), 供 PJ1-PJ6 联合规模阶梯在不同步长下保持同一物理约束。
+    dg_lim = 3e-4 * STEP_PROFILE_CTRL_M
     rel_V = np.maximum(0.0, (np.abs(np.diff(grades)) - dg_lim) / dg_lim)
     pen = pen_scale * 10.0 * (rel_R.mean() + rel_R.max()
                               + rel_V.mean() + rel_V.max())        # 竖曲线(式4.28-4.29)
+
+    # ---- 交叉桥斜交角约束(问题21) ----
+    # 【净空罚项的校核否决(2026-08-12)】原方案含净空罚(设计线高出障碍物地面
+    # H_clear), 但 z14 DEM(~9m/px)不含被交道路的结构高程(高架/下穿均不可见),
+    # 现状线校核 Δz 分布横跨 ±7m(被交道路既有上跨我方也有下穿), 任何净空阈值都
+    # 使现状方案天生不可行 -> 不可标定, 予以移除。竖向分离的工程成本已由触发桥
+    # 结构造价(1.56亿/km, 官方指引含典型跨线桥)承担; 待获得被交道路设计高程数据
+    # 后可恢复该约束(留作展望)。
+    cr = d["cross"]; kp = d["cross_keep"]
+    if len(cr["s"]) and np.any(kp):
+        # 斜交角: θ < skew_min_deg 设罚(跨铁路/河规范斜交限制; 现状最小 15.6°)
+        th_min = np.radians(
+            BRIDGE_TUNNEL["crossing_trigger"]["skew_min_deg"])
+        rel_S = np.maximum(0.0, (th_min - cr["theta"][kp]) / th_min)
+        pen += pen_scale * 10.0 * (rel_S.mean() + rel_S.max())
 
     ic_seg = 0.5 * (d["ic"][:-1].astype(float) + d["ic"][1:].astype(float))
     L_ic_km = float(np.sum(ic_seg * np.diff(sta))) / 1000.0
@@ -439,6 +495,10 @@ def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
                 Vs=Vs, Vh=Vh, ml=ml, kwh=kwh, L_km=L_new / 1000.0,
                 Rmin=float(R.min()),
                 L_eco_km=d["L_eco_km"], L_ic_km=L_ic_km,
+                L_cross_km=d["L_cross_km"],
+                n_cross=int(np.sum(d["cross_keep"])) if len(cr["s"]) else 0,
+                n_bridge_iv=len(d["bridge_iv"]),
+                ramp_cost=float(pc["ramp_cost"]),
                 L_bridge_new=ew["L_bridge_new_km"],
                 L_tunnel_new=ew["L_tunnel_new_km"], **cinfo)
     return C, E, pen, info
@@ -513,13 +573,13 @@ def build_plane_from_delta(pc, coef_norm):
     return xx, yy, L_new, R
 
 
-def plane_lcc(L_m, L_eco_km=0.0):
+def plane_lcc(L_m, L_eco_km=0.0, L_cross_km=None, ramp_cost=0.0):
     """
     第一阶段平面目标: 平面相关全生命周期成本(随平面走向变化的项), 论文 §3.4.2/式3.41:
-      工程占地 CR(式3.42-3.44) + 桥隧 CB(式3.45-3.51: 立交常数 + 生态隧道×穿越长度)
-      + 基本建设 CS(式3.52-3.54) + 养护 CQ 的基础/交通量项(式3.55)。
-    CR/CS/CQ 正比于里程 L; CB 的隧道项由平面是否穿越白云山生态区内生决定——
-    平面阶段即可体现"隧道 vs 绕行"的权衡(与论文式3.41 平面阶段含 CB 一致)。
+      工程占地 CR(式3.42-3.44) + 桥隧 CB(式3.45-3.51: 交叉触发桥内生 + 匝道常数
+      + 生态隧道×穿越长度) + 基本建设 CS(式3.52-3.54) + 养护 CQ 的基础/交通量项(式3.55)。
+    CR/CS/CQ 正比于里程 L; CB 的桥项由平面交叉几何内生(问题21)、隧道项由平面是否
+    穿越白云山生态区内生决定——平面阶段即可体现"跨越/绕行"与"隧道/绕行"的权衡。
     土方 C_TU 属纵断面阶段, 此处不计(最终 C 仍由 objectives_joint 全量计)。
     """
     from params import COST_UNIT, MAINTENANCE
@@ -527,8 +587,13 @@ def plane_lcc(L_m, L_eco_km=0.0):
     area_mu = (L_m * width) / 666.67
     CR = area_mu * COST_UNIT["farmland_per_mu"] + (L_m / 1000.0) * 5000.0   # 式3.42-3.44
     CS = COST_UNIT["subgrade_per_m"] * L_m + COST_UNIT["pavement_per_m"] * L_m  # 式3.53-3.54
-    CB = BRIDGE_TUNNEL["interchange_total_km"] * BRIDGE_TUNNEL["bridge_cost_per_km"] \
-        + float(L_eco_km) * BRIDGE_TUNNEL["tunnel_cost_per_km"]             # 式3.45-3.51
+    if L_cross_km is None:                # 旧口径兜底(常数计费)
+        CB = BRIDGE_TUNNEL["interchange_total_km"] * BRIDGE_TUNNEL["bridge_cost_per_km"] \
+            + float(L_eco_km) * BRIDGE_TUNNEL["tunnel_cost_per_km"]
+    else:
+        CB = float(L_cross_km) * BRIDGE_TUNNEL["bridge_cost_per_km"] \
+            + float(ramp_cost) \
+            + float(L_eco_km) * BRIDGE_TUNNEL["tunnel_cost_per_km"]         # 式3.45-3.51
     # 养护费 CQ (式3.55): 平面阶段无逐桩填挖信息, 仅计与里程相关的
     #   基础项 γ 与车流量项 365·T_j·τ(坡面项属纵断面阶段, 由 objectives_joint 全量计)。
     t = LCC["analysis_years"]; ru = LCC["bank_rate"]
@@ -542,7 +607,8 @@ def plane_lcc(L_m, L_eco_km=0.0):
 
 
 def make_scalar_plane(pc, C_ref_plane, pen_scale=1.0):
-    """第一阶段平面标量目标: min 平面LCC(含内生生态隧道费) + 平曲线半径惩罚(R>=400m)。"""
+    """第一阶段平面标量目标: min 平面LCC(交叉桥+生态隧道内生) + 平曲线半径惩罚(R>=400m)。"""
+    import crossings as _cr
     Rmin_req = FLAT_STD_100["R_extreme_m"]
 
     def f(coef_norm):
@@ -552,6 +618,14 @@ def make_scalar_plane(pc, C_ref_plane, pen_scale=1.0):
         seg = np.hypot(np.diff(xx), np.diff(yy))
         eco_seg = 0.5 * (eco[:-1].astype(float) + eco[1:].astype(float))
         L_eco_km = float(np.sum(eco_seg * seg)) / 1000.0
+        # 交叉触发桥长(问题21, 与联合口径一致; 生态区内交叉不设桥)
+        sarc = np.concatenate([[0], np.cumsum(seg)])
+        cross = _cr.detect_crossings(xx, yy, pc["lat0"], pc["lon0"])
+        keep = np.interp(cross["s"], sarc, eco.astype(float)) <= 0.5 \
+            if len(cross["s"]) else np.zeros(0, dtype=bool)
+        _, L_cross_m = _cr.bridge_intervals(cross, keep=keep)
         vio_R = np.maximum(0.0, (Rmin_req - R) / Rmin_req).mean()
-        return plane_lcc(L_new, L_eco_km) / C_ref_plane + pen_scale * 10.0 * vio_R
+        return plane_lcc(L_new, L_eco_km, L_cross_km=L_cross_m / 1000.0,
+                         ramp_cost=pc["ramp_cost"]) / C_ref_plane \
+            + pen_scale * 10.0 * vio_R
     return f

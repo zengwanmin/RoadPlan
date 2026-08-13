@@ -1,37 +1,33 @@
 # -*- coding: utf-8 -*-
 """
-run_comparison.py — 多算法对比主程序 (实验设计方案2 · 实验二)
+run_comparison.py — 多算法对比主程序 (实验设计方案2 · 实验二, 2026-08-12 升级)
 
-在同一模型、同一熵权标量化目标 F、同约束、同参数、同运行环境下, 对比:
-  IJS(本文) / JS(原型) / NSGA-II(学位论文原算法,关键对照) / GA / PSO / GWO
-六组问题规模 P1(桩号步长500m) / P2(300m) / P3(100m) / P4(50m) / P5(25m) / P6(10m),
-决策变量维度随步长减小而升高, 各独立运行30次。
+【PJ1-PJ6 平纵联合规模阶梯】(待办清单2 问题19, 替代旧版 P1-P6 纯纵断面口径)
+  在与主实验完全相同的【平纵联合】模型(objective_joint: 平面50正弦模态+纵断面
+  变坡点, 准天然地面DEM, 交叉桥内生触发+生态隧道内生, ±500m 走廊带)上, 以
+  【纵断面变坡点步长】生成规模阶梯(平面模态数固定50, 避免双变量混淆):
 
-指标(§3.4):
-  标量: 最优/均值/标准差 F, 收敛代数, 运行时间
-  Pareto: HV / IGD / Spacing (双目标 C-E, 由权重扫描生成前沿)
-  统计: Wilcoxon 秩和 p 值, Friedman 平均秩
+    PJ1 500m(dim≈95)  PJ2 400m(≈106)  PJ3 300m(≈125)
+    PJ4 200m(≈162)    PJ5 100m(=275, 主实验口径)  PJ6 50m(≈499)
 
-数据来源: 数据.xlsx (北环高速实测轨迹, 不可杜撰)
-公式来源: 林坤锐学位论文 (objective.py 已逐条标注式号)
+  对比算法: IJS(本文) / JS(原型) / NSGA-II(学位论文原算法) / GA / PSO / GWO,
+  每算法每规模 10 次独立运行(联合求值成本高, 减种子数并声明), pop=200, iter=500
+  (NFE 与主实验对齐; IJS 因 Levy/DE 阶段每代 3×NFE, 见 NFE_MULT 列声明)。
+  惩罚采用单一 pen_scale=1.0(所有算法同一目标函数, 保证公平; 不用主实验的
+  两阶段软硬调度, 因其为 IJS 专用管线)。
+
+【并行粒度: 按 (规模, 算法) 并行, 单元内部串行】
+  36 个 (规模,算法) 单元各占一个单核进程(BLAS 单线程), 单元内 10 次独立运行
+  串行执行; 运行时间在同构单核条件下测得, 算法间耗时可比(声明测时口径)。
+  每次运行的初始种群与种子由 (run 序号) 唯一确定, 与执行顺序无关。
 
 用法:
-  python3 run_comparison.py            # 正式全量 (6规模×6算法×30次, ~3 h)
-  python3 run_comparison.py --smoke    # 冒烟测试 (iter=5, n_runs=3, 2个规模)
-  python3 run_comparison.py --serial   # 强制单进程串行(约 10 h, 供严格计时复核)
-
-【并行粒度: 只按"规模"并行, 规模内部严格串行】
-  表B1/B2 把"平均运行时间(s)"作为结果列上报, 因此【同一规模内的 6 个算法、30 次
-  独立运行必须在同一条件下串行测得】, 否则算法间的耗时不再可比。本脚本只把 6 个
-  【规模】放到 6 个进程里跑(每规模一个进程, 内部完全串行), 既把墙钟时间从 ~10 h
-  压到 ~3 h(受最慢的 P6 支配), 又保证每张表里算法之间的耗时比较是公平的。
-  仅 6 进程并发, 内存带宽/缓存争用可忽略。
-  各进程结果与串行完全一致: 每次运行的初始种群与随机种子均由 (规模, 算法, run 序号)
-  唯一确定(default_rng(1000+r) / seed=1000+r), 与执行顺序无关。
+  python3 run_comparison.py                 # 正式全量 (6规模×6算法×10次)
+  python3 run_comparison.py --smoke         # 冒烟 (iter=5, 2次, PJ1/PJ6)
+  python3 run_comparison.py --workers 30    # 限制并发进程数(CPU 预算)
 """
 import os, json, time, argparse, multiprocessing as mp
-# 多进程下禁用 BLAS 内部多线程, 避免线程数超订(每进程只用 1 个核), 否则
-# 各进程互相抢核会让 runtime_mean 失真。必须在 import numpy 之前设置。
+# 多进程下禁用 BLAS 内部多线程(每进程 1 核), 否则抢核使 runtime 失真。
 for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
            "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
     os.environ.setdefault(_v, "1")
@@ -39,28 +35,53 @@ import numpy as np
 
 from params import ALGO
 from data_loader import load_alignment
-from objective import (objectives, entropy_weights, make_scalar_fn,
-                       make_biobj_fn, fixed_plane_ctx)
 from algorithms import run, VARIANTS
 from benchmarks import run_GA, run_PSO, run_GWO, run_NSGA2
-from metrics import (hypervolume_2d, igd, spacing, build_reference_front,
-                     nondominated, wilcoxon_ranksum, friedman_ranks)
+from metrics import wilcoxon_ranksum, friedman_ranks
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.path.join(HERE, "results")
 os.makedirs(RESULTS, exist_ok=True)
 
-# 六组规模: 通过纵断面桩号步长控制决策变量维度 (§3.3.3 实验设置)
-# 步长越小 -> 变坡点越密 -> 决策变量维度越高
+# 六组联合规模: 纵断面变坡点步长 500/400/300/200/100/50 m (问题19 定案)
 SCALES = {
-    "P1": dict(step_m=500.0, label="P1 (step 500 m)"),  # 桩号步长 500 m
-    "P2": dict(step_m=300.0, label="P2 (step 300 m)"),  # 桩号步长 300 m
-    "P3": dict(step_m=100.0, label="P3 (step 100 m)"),  # 桩号步长 100 m
-    "P4": dict(step_m=50.0,  label="P4 (step 50 m)"),   # 桩号步长 50 m
-    "P5": dict(step_m=25.0,  label="P5 (step 25 m)"),   # 桩号步长 25 m
-    "P6": dict(step_m=10.0,  label="P6 (step 10 m)"),   # 桩号步长 10 m
+    "PJ1": dict(step_m=500.0, label="PJ1 (profile step 500 m)"),
+    "PJ2": dict(step_m=400.0, label="PJ2 (profile step 400 m)"),
+    "PJ3": dict(step_m=300.0, label="PJ3 (profile step 300 m)"),
+    "PJ4": dict(step_m=200.0, label="PJ4 (profile step 200 m)"),
+    "PJ5": dict(step_m=100.0, label="PJ5 (profile step 100 m, main-exp)"),
+    "PJ6": dict(step_m=50.0,  label="PJ6 (profile step 50 m)"),
 }
 ALGOS = ["IJS", "JS", "NSGA-II", "GA", "PSO", "GWO"]
+N_RUNS_PJ = 10       # 联合求值成本高, 每单元 10 种子(声明)
+
+_PC = None           # worker 内缓存的平面上下文
+
+
+def _ctx(step_m):
+    """worker 内构建(缓存)联合上下文: 切换步长 + 平面上下文。"""
+    global _PC
+    import objective_joint as OJ
+    OJ.set_profile_step(step_m)
+    if _PC is None:
+        _PC = OJ.make_plane_context(load_alignment())
+    return OJ, _PC
+
+
+def make_scalar_joint_fn(step_m, wC, wE, C_ref, E_ref):
+    OJ, pc = _ctx(step_m)
+    def f(x):
+        C, E, pen, _ = OJ.objectives_joint(x, pc, pen_scale=1.0)
+        return wC * (C / C_ref) + wE * (E / E_ref) + pen
+    return f
+
+
+def make_biobj_joint_fn(step_m, C_ref, E_ref):
+    OJ, pc = _ctx(step_m)
+    def f(x):
+        C, E, pen, _ = OJ.objectives_joint(x, pc, pen_scale=1.0)
+        return np.array([C / C_ref + pen, E / E_ref + pen])
+    return f
 
 
 def convergence_gen(curve, frac=0.99):
@@ -73,18 +94,15 @@ def convergence_gen(curve, frac=0.99):
 
 
 def run_one_scalar(algo, f, lb, ub, pop0, max_iter, seed):
-    """运行一个标量算法, 返回 (best_f, curve, runtime, best_x)。"""
     t0 = time.time()
     if algo == "IJS":
         r = run(f, lb, ub, pop0, max_iter, seed, **VARIANTS["V5_IJS"])
     elif algo == "JS":
         r = run(f, lb, ub, pop0, max_iter, seed, **VARIANTS["V1_JS"])
     elif algo == "GA":
-        r = run_GA(f, lb, ub, pop0, max_iter, seed,
-                   p1=0.8, p2=0.2)
+        r = run_GA(f, lb, ub, pop0, max_iter, seed, p1=0.8, p2=0.2)
     elif algo == "PSO":
-        r = run_PSO(f, lb, ub, pop0, max_iter, seed,
-                    w=0.8, c1=2.0, c2=2.0)
+        r = run_PSO(f, lb, ub, pop0, max_iter, seed, w=0.8, c1=2.0, c2=2.0)
     elif algo == "GWO":
         r = run_GWO(f, lb, ub, pop0, max_iter, seed)
     else:
@@ -92,172 +110,142 @@ def run_one_scalar(algo, f, lb, ub, pop0, max_iter, seed):
     return r["best_f"], r["curve"], time.time() - t0, r["best_x"]
 
 
-def pareto_front_by_weights(algo, ctx, C_ref, E_ref, lb, ub, pop0,
-                            max_iter, seed, n_weights=11):
+def run_unit(job):
     """
-    权重扫描生成前沿(实验设计方案 §5.3.4 自适应权重): w1 从 0.1..0.9,
-    每个权重用标量算法求一个折中解, 汇成前沿; 返回 (C_norm,E_norm) 数组。
-    NSGA-II 直接用其原生前沿。
+    单个 (规模, 算法) 单元: n_runs 次独立运行串行执行(单核进程, 耗时可比)。
+    返回 (sk, algo, unit_res)。
     """
-    if algo == "NSGA-II":
-        fbi = make_biobj_fn(ctx, C_ref, E_ref)
-        rn = run_NSGA2(fbi, lb, ub, pop0, max_iter, seed)
-        return nondominated(rn["front_F"])
-    pts = []
-    for w1 in np.linspace(0.1, 0.9, n_weights):
-        f = make_scalar_fn(ctx, w1, 1 - w1, C_ref, E_ref)
-        _, _, _, bx = run_one_scalar(algo, f, lb, ub, pop0, max_iter, seed)
-        C, E, pen, _ = objectives(bx, ctx)
-        pts.append([C / C_ref + pen / C_ref, E / E_ref + pen / E_ref])
-    return nondominated(np.array(pts))
-
-
-def run_scale(job):
-    """
-    单个问题规模的完整对比(6 算法 × n_runs 次 + Pareto 前沿 + 统计检验)。
-    【规模内部完全串行】: 6 个算法、n_runs 次独立运行依次执行, 使 runtime_mean
-    在同一条件下测得、算法之间可直接比较(表B1/B2 上报运行时间)。
-    返回 (规模键, 该规模结果 dict)。
-    """
-    sk, step_m, label, pop_size, max_iter, n_runs, align = job
-    t_scale = time.time()
-    # 与主实验同口径: 准天然地面 + 豁免带(OSM锚定立交/生态区) + 生态隧道常数
-    ctx = fixed_plane_ctx(align, step_m=step_m)
-    sta = ctx["sta"]
-    dim = len(sta); lb, ub = np.zeros(dim), np.ones(dim)
-
-    # 熵权法权重(基准种群客观确定, 该规模统一)
-    base_rng = np.random.default_rng(2025)
-    base_pop = base_rng.random((pop_size, dim))
-    C0 = np.array([objectives(base_pop[i], ctx)[0] for i in range(pop_size)])
-    E0 = np.array([objectives(base_pop[i], ctx)[1] for i in range(pop_size)])
-    wC, wE = entropy_weights(C0, E0)
-    C_ref, E_ref = float(C0.mean()), float(E0.mean())
-    print(f"=== {label}  dim={dim}  wC={wC:.3f} wE={wE:.3f} ===", flush=True)
-
-    scale_res = dict(dim=dim, step_m=step_m, label=label,
-                     wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
-                     algos={}, curves={}, fronts={})
-    F_samples = {}   # 供统计检验: {algo:[n_runs best_f]}
-
-    for algo in ALGOS:
-        best_fs, conv_gens, runtimes = [], [], []
-        run_curves = []
-        for r in range(n_runs):
-            rng = np.random.default_rng(1000 + r)
-            pop0 = rng.random((pop_size, dim))
-            if algo == "NSGA-II":
-                # NSGA-II 双目标: best_f 取其前沿中标量化最优点(同口径)
-                fbi = make_biobj_fn(ctx, C_ref, E_ref)
-                t0 = time.time()
-                rn = run_NSGA2(fbi, lb, ub, pop0, max_iter, 1000 + r)
-                rt = time.time() - t0
-                fr = rn["front_F"]
-                scal = wC * fr[:, 0] + wE * fr[:, 1]
-                bf = float(scal.min())
-                best_fs.append(bf)
-                conv_gens.append(max_iter)  # NSGA-II 无单点收敛曲线
-                runtimes.append(rt)
-                if r == n_runs // 2:
-                    run_curves.append(None)
-            else:
-                f = make_scalar_fn(ctx, wC, wE, C_ref, E_ref)
-                bf, curve, rt, bx = run_one_scalar(algo, f, lb, ub, pop0,
-                                                   max_iter, 1000 + r)
-                best_fs.append(bf)
-                conv_gens.append(convergence_gen(curve))
-                runtimes.append(rt)
-                if r == n_runs // 2:
-                    run_curves.append(curve.tolist())
-        best_fs = np.array(best_fs)
-        F_samples[algo] = best_fs.tolist()
-        scale_res["algos"][algo] = dict(
-            best=float(best_fs.min()), mean=float(best_fs.mean()),
-            std=float(best_fs.std()), median=float(np.median(best_fs)),
-            conv_gen_mean=float(np.mean(conv_gens)),
-            runtime_mean=float(np.mean(runtimes)),
-            best_fs=best_fs.tolist())
-        if run_curves and run_curves[0] is not None:
-            scale_res["curves"][algo] = run_curves[0]
-        print(f"  [{sk}][{algo:8s}] best={best_fs.min():.4f} mean={best_fs.mean():.4f} "
-              f"std={best_fs.std():.4f} t={np.mean(runtimes):.2f}s", flush=True)
-
-    # ---- Pareto 前沿(六组规模均详细计算, 用固定种子的权重扫描) ----
-    print(f"  [{sk}][Pareto] 权重扫描生成各算法前沿 ...", flush=True)
-    fronts = {}
-    fseed_pop = np.random.default_rng(1500).random((pop_size, dim))
-    for algo in ALGOS:
-        fr = pareto_front_by_weights(algo, ctx, C_ref, E_ref, lb, ub,
-                                     fseed_pop, max_iter, 1500,
-                                     n_weights=11)
-        fronts[algo] = fr.tolist()
-    ref_front = build_reference_front([np.array(fronts[a]) for a in ALGOS])
-    # HV 参考点: 所有前沿并集的最大值再放宽10%
-    allpts = np.vstack([np.array(fronts[a]) for a in ALGOS])
-    ref_pt = [allpts[:, 0].max() * 1.05, allpts[:, 1].max() * 1.05]
-    pmet = {}
-    for algo in ALGOS:
-        fr = np.array(fronts[algo])
-        pmet[algo] = dict(
-            HV=hypervolume_2d(fr, ref_pt),
-            IGD=igd(fr, ref_front),
-            Spacing=spacing(fr),
-            n_points=len(fr))
-    scale_res["fronts"] = fronts
-    scale_res["pareto_metrics"] = pmet
-    scale_res["ref_point"] = ref_pt
-
-    # ---- 统计检验(§3.4): Wilcoxon(IJS vs 其它) + Friedman ----
-    wil = {a: wilcoxon_ranksum(F_samples["IJS"], F_samples[a])
-           for a in ALGOS if a != "IJS"}
-    chi2, fp, avg_rank = friedman_ranks(F_samples)
-    scale_res["stats"] = dict(wilcoxon_vs_IJS=wil,
-                              friedman_chi2=chi2, friedman_p=fp,
-                              friedman_avg_rank=avg_rank)
-    print(f"=== {label} 完成, 耗时 {(time.time()-t_scale)/60:.1f} min ===", flush=True)
-    return sk, scale_res
+    (sk, algo, step_m, wC, wE, C_ref, E_ref,
+     pop_size, max_iter, n_runs) = job
+    OJ, pc = _ctx(step_m)
+    dim = OJ.DIM
+    lb, ub = np.zeros(dim), np.ones(dim)
+    best_fs, conv_gens, runtimes = [], [], []
+    curves, feas = [], []
+    for r in range(n_runs):
+        rng = np.random.default_rng(1000 + r)
+        pop0 = rng.random((pop_size, dim))
+        if algo == "NSGA-II":
+            fbi = make_biobj_joint_fn(step_m, C_ref, E_ref)
+            t0 = time.time()
+            rn = run_NSGA2(fbi, lb, ub, pop0, max_iter, 1000 + r)
+            rt = time.time() - t0
+            fr = rn["front_F"]
+            scal = wC * fr[:, 0] + wE * fr[:, 1]
+            bi = int(np.argmin(scal))
+            bf = float(scal[bi])
+            bx = rn["front_X"][bi] if "front_X" in rn else None
+            best_fs.append(bf); conv_gens.append(max_iter); runtimes.append(rt)
+            curves.append(None)
+        else:
+            f = make_scalar_joint_fn(step_m, wC, wE, C_ref, E_ref)
+            bf, curve, rt, bx = run_one_scalar(algo, f, lb, ub, pop0,
+                                               max_iter, 1000 + r)
+            best_fs.append(bf)
+            conv_gens.append(convergence_gen(curve))
+            runtimes.append(rt)
+            curves.append(curve)
+        # 可行性(pen==0)与进入可行域代数(问题19 加分项: 两段收敛报告)
+        if bx is not None:
+            C, E, pen, info = OJ.objectives_joint(np.asarray(bx), pc)
+            feas.append(dict(penalty=float(pen), C=float(C), E=float(E),
+                             L_km=float(info["L_km"]),
+                             L_cross_km=float(info["L_cross_km"])))
+        else:
+            feas.append(None)
+    best_fs = np.array(best_fs)
+    med_idx = int(np.argsort(best_fs)[len(best_fs) // 2])
+    med_curve = curves[med_idx]
+    unit = dict(
+        best=float(best_fs.min()), mean=float(best_fs.mean()),
+        std=float(best_fs.std()), median=float(np.median(best_fs)),
+        conv_gen_mean=float(np.mean(conv_gens)),
+        runtime_mean=float(np.mean(runtimes)),
+        best_fs=best_fs.tolist(),
+        runtimes=list(map(float, runtimes)),
+        feas=feas,
+        curve=(None if med_curve is None else np.asarray(med_curve).tolist()))
+    print(f"  [{sk}][{algo:8s}] best={best_fs.min():.4f} "
+          f"mean={best_fs.mean():.4f} std={best_fs.std():.4f} "
+          f"t={np.mean(runtimes):.1f}s", flush=True)
+    return sk, algo, unit
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--smoke", action="store_true",
-                    help="冒烟测试(iter=5, n_runs=3, 仅 P1/P6 两个规模)")
-    ap.add_argument("--serial", action="store_true",
-                    help="强制单进程串行执行所有规模(约 10 h, 供严格计时复核)")
+                    help="冒烟(iter=5, n_runs=2, 仅 PJ1/PJ6)")
+    ap.add_argument("--workers", type=int, default=30,
+                    help="最大并发进程数(默认 30, CPU 预算 32 核)")
     args = ap.parse_args()
 
     t_all = time.time()
+    import objective_joint as OJ
+    from objective import entropy_weights
     pop_size = ALGO["pop_size"]
     max_iter = ALGO["max_iter"]
-    n_runs = ALGO["n_runs"]
+    n_runs = N_RUNS_PJ
     scale_keys = list(SCALES.keys())
     if args.smoke:
-        max_iter, n_runs = 5, 3
-        scale_keys = ["P1", "P6"]        # 最小与最大维度各取一个, 验证两端
+        max_iter, n_runs = 5, 2
+        scale_keys = ["PJ1", "PJ6"]
         print(f"[冒烟] max_iter={max_iter} n_runs={n_runs} scales={scale_keys}")
 
     align = load_alignment()
-    jobs = [(sk, SCALES[sk]["step_m"], SCALES[sk]["label"],
-             pop_size, max_iter, n_runs, align) for sk in scale_keys]
+    pc = OJ.make_plane_context(align)
 
-    if args.serial or len(jobs) == 1:
-        n_workers = 1
-        print(f"[执行] 单进程串行, {len(jobs)} 个规模")
-        results = [run_scale(j) for j in jobs]
-    else:
-        n_workers = len(jobs)            # 一个规模一个进程(规模内部仍串行)
-        print(f"[执行] {n_workers} 进程(每规模一个, 规模内部串行以保证运行时间可比)")
-        with mp.Pool(n_workers) as pool:
-            results = pool.map(run_scale, jobs)
+    # ---- 每规模: 熵权与参考尺度(基准种群客观确定, 规模内 6 算法统一) ----
+    scale_meta = {}
+    for sk in scale_keys:
+        step = SCALES[sk]["step_m"]
+        OJ.set_profile_step(step)
+        dim = OJ.DIM
+        base = np.random.default_rng(2025).random((pop_size, dim))
+        CE = [OJ.objectives_joint(base[i], pc)[:2] for i in range(pop_size)]
+        C0 = np.array([c for c, _ in CE]); E0 = np.array([e for _, e in CE])
+        wC, wE = entropy_weights(C0, E0)
+        scale_meta[sk] = dict(step_m=step, dim=dim,
+                              label=SCALES[sk]["label"],
+                              wC=float(wC), wE=float(wE),
+                              C_ref=float(C0.mean()), E_ref=float(E0.mean()))
+        print(f"[规模] {SCALES[sk]['label']} dim={dim} "
+              f"wC={wC:.3f} wE={wE:.3f}", flush=True)
+
+    jobs = [(sk, algo, scale_meta[sk]["step_m"],
+             scale_meta[sk]["wC"], scale_meta[sk]["wE"],
+             scale_meta[sk]["C_ref"], scale_meta[sk]["E_ref"],
+             pop_size, max_iter, n_runs)
+            for sk in scale_keys for algo in ALGOS]
+    n_workers = min(args.workers, len(jobs))
+    print(f"[执行] {len(jobs)} 个(规模,算法)单元, {n_workers} 进程"
+          f"(单元内 {n_runs} 次独立运行串行, 单核测时可比)", flush=True)
+    with mp.Pool(n_workers) as pool:
+        results = pool.map(run_unit, jobs)
 
     out = dict(meta=dict(pop_size=pop_size, max_iter=max_iter, n_runs=n_runs,
                          total_km=align["total_km"], algos=ALGOS,
-                         scales={k: SCALES[k]["label"] for k in scale_keys},
+                         scales={k: scale_meta[k] for k in scale_keys},
+                         n_mode=OJ.N_MODE, corridor_half_w=OJ.CORRIDOR_HALF_W,
                          smoke=bool(args.smoke), n_workers=n_workers,
-                         execution="按规模并行、规模内部串行(运行时间在同一条件下测得)"),
-               scales={})
-    for sk, sr in results:
-        out["scales"][sk] = sr
+                         pen_scale=1.0,
+                         execution="按(规模,算法)并行、单元内部串行(单核, 测时可比); "
+                                   "平纵联合口径(问题19), 交叉桥内生(问题21)"),
+               scales={sk: dict(**scale_meta[sk], algos={}, curves={})
+                       for sk in scale_keys})
+    for sk, algo, unit in results:
+        curve = unit.pop("curve")
+        out["scales"][sk]["algos"][algo] = unit
+        if curve is not None:
+            out["scales"][sk]["curves"][algo] = curve
+
+    # ---- 统计检验: Wilcoxon(IJS vs 其它) + Friedman(每规模) ----
+    for sk in scale_keys:
+        F = {a: out["scales"][sk]["algos"][a]["best_fs"] for a in ALGOS}
+        wil = {a: wilcoxon_ranksum(F["IJS"], F[a]) for a in ALGOS if a != "IJS"}
+        chi2, fp, avg_rank = friedman_ranks(F)
+        out["scales"][sk]["stats"] = dict(wilcoxon_vs_IJS=wil,
+                                          friedman_chi2=chi2, friedman_p=fp,
+                                          friedman_avg_rank=avg_rank)
 
     fn = "comparison_results_smoke.json" if args.smoke else "comparison_results.json"
     with open(os.path.join(RESULTS, fn), "w", encoding="utf-8") as fp:

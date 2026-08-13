@@ -29,10 +29,10 @@ plt.rcParams["figure.dpi"] = 150
 plt.rcParams["font.size"] = 11
 
 ALGOS = ["IJS", "JS", "NSGA-II", "GA", "PSO", "GWO"]
-SCALE_KEYS = ["P1", "P2", "P3", "P4", "P5", "P6"]
-# 各规模英文标签(用于表头与图标题, 与 run_comparison.SCALES 的桩号步长一致)
-SCALE_LABEL = {"P1": "P1 (500 m)", "P2": "P2 (300 m)", "P3": "P3 (100 m)",
-               "P4": "P4 (50 m)", "P5": "P5 (25 m)", "P6": "P6 (10 m)"}
+# PJ1-PJ6 平纵联合规模阶梯(问题19, 2026-08-12): 纵断面步长 500..50m
+SCALE_KEYS = ["PJ1", "PJ2", "PJ3", "PJ4", "PJ5", "PJ6"]
+SCALE_LABEL = {"PJ1": "PJ1 (500 m)", "PJ2": "PJ2 (400 m)", "PJ3": "PJ3 (300 m)",
+               "PJ4": "PJ4 (200 m)", "PJ5": "PJ5 (100 m)", "PJ6": "PJ6 (50 m)"}
 COLOR = {"IJS": "#c44e52", "JS": "#4c72b0", "NSGA-II": "#55a868",
          "GA": "#8172b3", "PSO": "#ccb974", "GWO": "#64b5cd"}
 STYLE = {"IJS": "-", "JS": "--", "NSGA-II": "-.", "GA": ":", "PSO": "--", "GWO": "-."}
@@ -84,11 +84,13 @@ def table_B2(d):
         _write_table(f"表B2_{s}_算法最优均值标准差与统计检验汇总表", hdr, rows)
 
 
-# ---- 表B3: Pareto质量指标 HV/IGD/Spacing (逐规模各输出一份) ----
+# ---- 表B3: Pareto质量指标 HV/IGD/Spacing (旧口径; PJ 阶梯无前沿扫描时自动跳过) ----
 def table_B3(d):
     hdr = ["Algorithm", "HV (↑)", "IGD (↓)", "Spacing (↓)", "Front points"]
     for s in SCALE_KEYS:
         pm = d["scales"][s].get("pareto_metrics", {})
+        if not pm:
+            continue
         rows = []
         for a in ALGOS:
             m = pm.get(a, {})
@@ -97,6 +99,28 @@ def table_B3(d):
                          f"{m.get('Spacing', float('nan')):.4f}",
                          m.get("n_points", 0)])
         _write_table(f"表B3_{s}_Pareto前沿质量指标对比表", hdr, rows)
+
+
+# ---- 表B4: 可行性与两段收敛(问题19 加分项): 可行率 + 最优解工程指标 ----
+def table_B4(d):
+    hdr = ["Scale", "Algorithm", "Feasible runs", "Best C (1e8)", "Best E (1e8)",
+           "L (km)", "L_cross bridge (km)"]
+    rows = []
+    for s in SCALE_KEYS:
+        for a in ALGOS:
+            ai = d["scales"][s]["algos"][a]
+            fe = [x for x in ai.get("feas", []) if x]
+            if not fe:
+                continue
+            nf = sum(1 for x in fe if x["penalty"] <= 1e-9)
+            bi = int(np.argmin([x["C"] if x["penalty"] <= 1e-9 else np.inf
+                                for x in fe]))
+            b = fe[bi]
+            rows.append([SCALE_LABEL[s], a, f"{nf}/{len(fe)}",
+                         f"{b['C']/1e8:.2f}", f"{b['E']/1e8:.2f}",
+                         f"{b['L_km']:.2f}", f"{b['L_cross_km']:.2f}"])
+    if rows:
+        _write_table("表B4_可行性与最优解工程指标", hdr, rows)
 
 
 # ---- 图B1: 六规模收敛曲线 (a-f, 2×3子图) ----
@@ -189,7 +213,7 @@ def fig_B4(d):
                         tick_labels=ALGOS, medianprops=dict(color="black"))
         for patch, a in zip(bp["boxes"], ALGOS):
             patch.set_facecolor(COLOR[a]); patch.set_alpha(0.65)
-        ax.set_ylabel("System benefit F (30 independent runs)")
+        ax.set_ylabel(f"System benefit F ({d['meta']['n_runs']} independent runs)")
         ax.set_xlabel("Algorithm")
         ax.set_title(f"Fig. B4  Box plots of system benefit F across algorithms (scale {SCALE_LABEL.get(s, s)})")
         ax.grid(axis="y", alpha=0.3)
@@ -205,7 +229,9 @@ def _save(name):
 
 def main():
     d = load()
-    table_B1(d); table_B2(d); table_B3(d)
+    global SCALE_KEYS
+    SCALE_KEYS = [k for k in SCALE_KEYS if k in d["scales"]]
+    table_B1(d); table_B2(d); table_B3(d); table_B4(d)
     fig_B1(d); fig_B2(d); fig_B3(d); fig_B4(d)
     print("[完成] 全部图表已输出到 figures/ 与 tables/")
 

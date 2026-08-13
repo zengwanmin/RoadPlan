@@ -318,11 +318,47 @@ def table_D9(d):
                   "L (km)", "Eco tunnel (km)", "Rmin (m)", "Penalty"], rows)
 
 
+def fig_D10(d):
+    """图D10: 交叉桥每侧延伸 E_ext 敏感性(问题21 参数, 重优化 C/E)。"""
+    pts = d.get("ext_sens")
+    if not pts:
+        print("[图] 跳过 图D10: 结果无 ext_sens")
+        return
+    pts = sorted(pts, key=lambda p: p["ext_m"])
+    x = np.array([p["ext_m"] for p in pts])
+    C = np.array([p["C"] for p in pts]) / YI
+    E = np.array([p["E"] for p in pts]) / YI
+    fig, ax1 = plt.subplots(figsize=(7.2, 4.6))
+    l1, = ax1.plot(x, C, "o-", color="#c44e52", lw=1.9, label="Re-optimized cost C")
+    ax1.set_xlabel("Bridge extension per side $E_{ext}$ (m)")
+    ax1.set_ylabel("Re-optimized life-cycle cost C (10^8 RMB)", color="#c44e52")
+    ax1.set_xticks(x)
+    ax2 = ax1.twinx()
+    l2, = ax2.plot(x, E, "s--", color="#4c72b0", lw=1.7, label="Re-optimized energy E")
+    ax2.set_ylabel("Re-optimized life-cycle energy E (10^8 RMB)", color="#4c72b0")
+    ax1.set_title("Fig. D10  Crossing-bridge extension sensitivity (re-optimized, w1=0.65)")
+    ax1.legend(handles=[l1, l2], frameon=False, fontsize=9, loc="best")
+    ax1.grid(alpha=0.3)
+    _save("图D10_交叉桥延伸Eext敏感性_重优化")
+
+
+def table_D10(d):
+    pts = d.get("ext_sens")
+    if not pts:
+        return
+    rows = [[f"{p['ext_m']:.0f}", f"{p['C']/YI:.4f}", f"{p['E']/YI:.4f}",
+             f"{p['L_km']:.3f}", f"{p['pen']:.2e}"]
+            for p in sorted(pts, key=lambda p: p["ext_m"])]
+    _write_table("表D10_交叉桥延伸Eext敏感性",
+                 ["E_ext per side (m)", "C (10^8 RMB)", "E (10^8 RMB)",
+                  "L (km)", "Penalty"], rows)
+
+
 def main():
     d = load()
     fig_D1(d); fig_D2(d); fig_D3(d); fig_D4(d); fig_D5(d)
-    fig_D6(d); fig_D7(d); fig_D8(d); fig_D9(d)
-    table_D1(d); table_D2(d); table_D3(d); table_D9(d)
+    fig_D6(d); fig_D7(d); fig_D8(d); fig_D9(d); fig_D10(d)
+    table_D1(d); table_D2(d); table_D3(d); table_D9(d); table_D10(d)
     print("[完成] 全部图表已输出到 figures/ 与 tables/")
 
 

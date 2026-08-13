@@ -123,12 +123,16 @@ def earthwork_cost(sta, gz, design_z, road_width,
 # =============================================================
 #  平面全生命周期成本 C_PING = CR + CB + CS + CQ  (式3.41)
 # =============================================================
-def lcc_ping(total_len_m, sta, gz, design_z, L_eco_tunnel_km=0.0, exempt=None):
+def lcc_ping(total_len_m, sta, gz, design_z, L_eco_tunnel_km=0.0, exempt=None,
+             L_bridge_km=None, ramp_cost=0.0):
     """
     平面/结构全生命周期成本(式3.41-3.55)。
 
     L_eco_tunnel_km: 线位穿越白云山生态强制隧道区的长度(km, 由平面走向内生决定)。
-    exempt: 结构豁免掩膜(立交带/生态区), 该处无边坡 -> 养护费坡面项置零。
+    exempt: 结构豁免掩膜(桥区间/生态区), 该处无边坡 -> 养护费坡面项置零。
+    L_bridge_km: 交叉触发的跨越桥总长(km, 问题21 内生口径)。None 时退回
+                 "立交7.8km常数"旧口径(向后兼容)。
+    ramp_cost:   7座立交匝道功能费常数(元, 由现状线校准, 与线位无关)。
     """
     L = total_len_m
     dz = design_z - gz
@@ -141,12 +145,19 @@ def lcc_ping(total_len_m, sta, gz, design_z, L_eco_tunnel_km=0.0, exempt=None):
     CP = (L / 1000.0) * 5000.0            # 临时占地(式3.43, 每公里工程标定)
     CR = CM + CP
 
-    # (2) 桥梁隧道建设费用 CB (式3.45-3.51, 空间锚定+内生口径, 见 params.BRIDGE_TUNNEL):
-    #   功能性立交(7座): 横贯走廊带的城市道路交叉, 任何线位都必须跨越 -> 常数计费;
-    #   白云山隧道: 线位穿越生态强制隧道区的长度 L_eco_tunnel_km × 隧道单价(内生)。
-    L_bridge = BRIDGE_TUNNEL["interchange_total_km"]
+    # (2) 桥梁隧道建设费用 CB (式3.45-3.51, 交叉触发内生口径, 见 params.BRIDGE_TUNNEL):
+    #   跨越桥: 平面线形与 OSM 障碍物(road≥primary/rail/water)交叉触发,
+    #           桥长由交叉几何内生(问题21), L_bridge_km × 桥单价;
+    #   立交匝道: 功能性常数 ramp_cost(现状线校准, 任何线位都须与被交道路互通);
+    #   白云山隧道: 生态强制隧道区穿越长度 L_eco_tunnel_km × 隧道单价(内生)。
+    if L_bridge_km is None:               # 旧口径兜底(常数计费)
+        L_bridge = BRIDGE_TUNNEL["interchange_total_km"]
+        ramp = 0.0
+    else:
+        L_bridge = float(L_bridge_km)
+        ramp = float(ramp_cost)
     L_tunnel = float(L_eco_tunnel_km)
-    CB = L_bridge * BRIDGE_TUNNEL["bridge_cost_per_km"] \
+    CB = L_bridge * BRIDGE_TUNNEL["bridge_cost_per_km"] + ramp \
         + L_tunnel * BRIDGE_TUNNEL["tunnel_cost_per_km"]
 
     # (3) 基本建设费用 CS (式3.52-3.54): 路基相关 + 路面
@@ -323,7 +334,9 @@ def objectives(x, ctx):
         tunnel_cap_per_m=BRIDGE_TUNNEL["tunnel_cost_per_km"] / 1000.0,
         exempt=exempt)
     C_PING, cinfo = lcc_ping(L, sta, gz, design_z,
-                             L_eco_tunnel_km=L_eco_km, exempt=exempt)
+                             L_eco_tunnel_km=L_eco_km, exempt=exempt,
+                             L_bridge_km=ctx.get("L_bridge_km"),
+                             ramp_cost=ctx.get("ramp_cost", 0.0))
     C = C_PING + C_TU                                           # 式4.25
 
     # ---- 目标二 E (式4.26): 全生命周期货币化能耗 (元) ----
@@ -417,14 +430,17 @@ def make_biobj_fn(ctx, C_ref, E_ref):
 def fixed_plane_ctx(align, step_m=100.0):
     """
     构建【固定平面(实测中线)】的纵断面优化上下文, 与联合模型同口径:
-      gz       : 沿实测中线按 step_m 采样的【准天然地面】高程(dem.py road-removal)
-      exempt   : 结构豁免掩膜 = 生态强制隧道区 ∪ 7座立交带(OSM 锚定, 里程区间)
-      L_eco_km : 生态区穿越长度(固定平面下为常数, 计入 CB)
+      gz          : 沿实测中线按 step_m 采样的【准天然地面】高程(dem.py road-removal)
+      exempt      : 结构豁免掩膜 = 生态强制隧道区 ∪ 交叉触发桥区间(问题21)
+      L_eco_km    : 生态区穿越长度(固定平面下为常数, 计入 CB)
+      L_bridge_km : 交叉触发跨越桥总长(固定平面下为常数, 计入 CB)
+      ramp_cost   : 7座立交匝道功能费常数(现状线校准)
     供消融实验/多算法对比使用(替代旧的 resample_profile + 实测路面高程口径)。
     """
     import json
     import os
     import dem
+    import crossings as _cr
 
     s, X, Y = align["s"], align["X"], align["Y"]
     sta = np.arange(0.0, s[-1], step_m)
@@ -434,22 +450,27 @@ def fixed_plane_ctx(align, step_m=100.0):
     gz = dem.ground_elev_xy(x_sta, y_sta, lat0, lon0, natural=True)
     eco = dem.eco_mask_xy(x_sta, y_sta, lat0, lon0)
 
-    # 立交带(里程区间): 复用 OSM 锚定缓存, 缺失时由联合模型构建一次
+    # 立交锚定缓存(匝道校准依赖): 缺失时由联合模型构建一次
     base = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "数据", "OSM走廊带障碍物")
     cache_fn = os.path.join(base, "ic_anchor_cache.json")
     if not os.path.exists(cache_fn):
         from objective_joint import make_plane_context
         make_plane_context(align)          # 触发 _ic_bands_from_osm 建缓存
-    with open(cache_fn, encoding="utf-8") as f:
-        anchors = json.load(f)
-    ic = np.zeros(len(sta), dtype=bool)
-    for rec in anchors.values():
-        half = rec["L_km"] * 1000.0 / 2.0
-        ic |= (sta >= rec["s_cross"] - half) & (sta <= rec["s_cross"] + half)
-    exempt = eco | ic
+
+    # 交叉触发桥(问题21): 固定平面 -> 一次性预计算(区间/掩膜/长度均为常数)
+    eco_full = dem.eco_mask_xy(X, Y, lat0, lon0)
+    cross = _cr.detect_crossings(X, Y, lat0, lon0)
+    keep = np.interp(cross["s"], s, eco_full.astype(float)) <= 0.5 \
+        if len(cross["s"]) else np.zeros(0, dtype=bool)
+    bridge_iv, L_cross_m = _cr.bridge_intervals(cross, keep=keep)
+    bridge = _cr.mask_from_intervals(sta, bridge_iv)
+    ramp_cost, _ = _cr.ramp_cost_from_baseline(bridge_iv)
+    exempt = eco | bridge
 
     eco_seg = 0.5 * (eco[:-1].astype(float) + eco[1:].astype(float))
     L_eco_km = float(np.sum(eco_seg * np.diff(sta))) / 1000.0
     return dict(sta=sta, gz=gz, total_len_m=float(s[-1]),
-                exempt=exempt, L_eco_km=L_eco_km)
+                exempt=exempt, L_eco_km=L_eco_km,
+                L_bridge_km=L_cross_m / 1000.0, ramp_cost=float(ramp_cost),
+                bridge_iv=bridge_iv)
