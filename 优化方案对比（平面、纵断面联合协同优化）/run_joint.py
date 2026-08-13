@@ -90,6 +90,10 @@ def evaluate_joint(x, pc):
                 L_eco_km=info["L_eco_km"], L_ic_km=info["L_ic_km"],
                 L_bridge_new=info["L_bridge_new"],
                 L_tunnel_new=info["L_tunnel_new"],
+                L_dense1_km=info["L_dense1_km"],
+                L_dense2_km=info["L_dense2_km"],
+                soft_dense1=info["soft_dense1"],
+                dense_depth_max=info["dense_depth_max"],
                 plane_x=d["xx"].tolist(), plane_y=d["yy"].tolist(),
                 design_z=d["design_z"].tolist(), sta=d["sta"].tolist(),
                 gz_new=d["gz_new"].tolist(), Q_series=Q_series.tolist())
@@ -213,6 +217,22 @@ def main():
                       best_x=rC["best_x"]))
     feas = [c for c in cands if c["pen"] <= 1e-6
             and c["C"] <= (1 + BUDGET_TOL) * res_A["C"]]
+    if not feas:
+        # 空集会让下面的 front[...] / M.min(0) 直接抛异常, 且看不出原因。
+        # 密度 Tier2 这类硬约束收紧后确有可能全部候选不可行, 故降级并说明原因。
+        pen_ok = [c for c in cands if c["pen"] <= 1e-6]
+        pen_min = min((c["pen"] for c in cands), default=float("nan"))
+        if pen_ok:
+            print(f"[警告] 无候选同时满足 pen<=1e-6 与预算 C<=(1+{BUDGET_TOL})×现状; "
+                  f"{len(pen_ok)} 个候选满足惩罚但超预算 -> 放宽预算约束降级选择",
+                  flush=True)
+            feas = pen_ok
+        else:
+            print(f"[警告] 无候选满足 pen<=1e-6(最小惩罚 {pen_min:.6g}) -> "
+                  f"退化为按最小惩罚选择。请检查硬约束(密度 Tier2 / 最小半径)是否过严, "
+                  f"以及走廊带是否被禁区封堵(见 building_density.corridor_passability)",
+                  flush=True)
+            feas = [c for c in cands if c["pen"] <= pen_min + 1e-12]
     front = [c for c in feas
              if not any((o["C"] <= c["C"] and o["E"] <= c["E"])
                         and (o["C"] < c["C"] or o["E"] < c["E"]) for o in feas)]

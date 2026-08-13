@@ -51,11 +51,12 @@ import numpy as np
 from scipy.interpolate import splprep, splev
 
 from params import (CASE, EARTHWORK, TRAFFIC, ENERGY_PRICE, LONG_STD_100, LCC,
-                    FLAT_STD_100, BRIDGE_TUNNEL)
+                    FLAT_STD_100, BRIDGE_TUNNEL, DENSITY)
 from objective import (earthwork_cost, lcc_ping, fuel_energy, ev_energy,
                        entropy_weights, _grades)
 from data_loader import load_alignment
 import dem
+import building_mask
 
 CORRIDOR_HALF_W = 500.0     # 走廊带半宽(m): 主实验口径 ±500m(±250m 作敏感性情景)
 STEP_PLANE_CTRL_M = 150.0   # 平面决策变量间距(m): 受R≥400m约束, ≥150m贴地才可行
@@ -380,13 +381,27 @@ def decode_joint(x, pc):
     kappa_seg = 0.5 * (kappa_sta[:-1] + kappa_sta[1:])
     R_seg = 1.0 / np.maximum(kappa_seg, 1e-12)
 
+    # 建筑密度分区(V1 = 方案A; 详见 building_mask.py 与 data 分支文档 §2.8):
+    #   depth2 用双线性插值 -> 惩罚项对平面偏移连续可微, IJS 才有逃离禁区的方向;
+    #   tier1/tier2 布尔量仅用于长度诊断, 最近邻即可。
+    dep2 = building_mask.depth2_at_xy(x_sta, y_sta)
+    t1 = building_mask.tier1_at_xy(x_sta, y_sta)
+    t2 = dep2 > 0.0
+    dL_dense = np.diff(sta)          # 段中点平均, 与 L_eco_km 同一惯用法
+    L_dense1_km = float(np.sum(
+        0.5 * (t1[:-1].astype(float) + t1[1:].astype(float)) * dL_dense)) / 1000.0
+    L_dense2_km = float(np.sum(
+        0.5 * (t2[:-1].astype(float) + t2[1:].astype(float)) * dL_dense)) / 1000.0
+
     return dict(xx=xx, yy=yy, L_new=L_new, R=R, R_seg=R_seg, sta=sta,
                 gz_new=gz_new, design_z=design_z,
                 sta_ctrl=sta_ctrl, gz_ctrl=gz_ctrl,
                 design_z_ctrl=design_z_ctrl,
                 eco=eco, ic=ic, exempt=exempt, L_eco_km=L_eco_km,
                 cross=cross, cross_keep=keep, bridge_iv=bridge_iv,
-                bridge=bridge, L_cross_km=L_cross_m / 1000.0)
+                bridge=bridge, L_cross_km=L_cross_m / 1000.0,
+                dep2=dep2, t1=t1, t2=t2,
+                L_dense1_km=L_dense1_km, L_dense2_km=L_dense2_km)
 
 
 def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
@@ -489,10 +504,23 @@ def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
         rel_S = np.maximum(0.0, (th_min - cr["theta"][kp]) / th_min)
         pen += pen_scale * 10.0 * (rel_S.mean() + rel_S.max())
 
+    # 建筑密度 Tier2 严格禁行(硬约束, data 分支文档 §2.8)。
+    # 用【禁区内深度】而非布尔掩膜: 布尔量在禁区内部梯度恒为 0, IJS 感受不到逃离方向;
+    # 深度场处处指向最近边界。归一化后与既有惩罚同量级。
+    # 注: Tier1 的软抑制【绝不能】加到 pen —— run_joint 的可行性门控是 pen<=1e-6,
+    # 任何非零惩罚都会剔除候选, 若 Tier1 进 pen 则退化为硬约束, 而现状线位 M-A 自身
+    # 就有 2.00 km 落在 Tier1, "允许在一定范围内穿越"的设计目标会被静默摧毁。
+    rel_D2 = d["dep2"] / DENSITY["depth_ref_m"]
+    pen = pen + pen_scale * DENSITY["k_forbid"] * (rel_D2.mean() + rel_D2.max())
+
     ic_seg = 0.5 * (d["ic"][:-1].astype(float) + d["ic"][1:].astype(float))
     L_ic_km = float(np.sum(ic_seg * np.diff(sta))) / 1000.0
+    L_km_new = L_new / 1000.0
+    # Tier1 软代价: 穿越可穿越带的里程占比。走 info 而非 pen(见上文说明),
+    # 由 make_scalar_joint 以 DENSITY["w_dense1"] 加权计入标量目标。
+    soft_dense1 = d["L_dense1_km"] / max(L_km_new, 1e-9)
     info = dict(C_PING=C_PING, C_TU=C_TU, E_fuel=E_fuel, E_ele=E_ele,
-                Vs=Vs, Vh=Vh, ml=ml, kwh=kwh, L_km=L_new / 1000.0,
+                Vs=Vs, Vh=Vh, ml=ml, kwh=kwh, L_km=L_km_new,
                 Rmin=float(R.min()),
                 L_eco_km=d["L_eco_km"], L_ic_km=L_ic_km,
                 L_cross_km=d["L_cross_km"],
@@ -500,16 +528,21 @@ def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
                 n_bridge_iv=len(d["bridge_iv"]),
                 ramp_cost=float(pc["ramp_cost"]),
                 L_bridge_new=ew["L_bridge_new_km"],
-                L_tunnel_new=ew["L_tunnel_new_km"], **cinfo)
+                L_tunnel_new=ew["L_tunnel_new_km"],
+                L_dense1_km=d["L_dense1_km"], L_dense2_km=d["L_dense2_km"],
+                soft_dense1=soft_dense1,
+                dense_depth_max=float(d["dep2"].max()), **cinfo)
     return C, E, pen, info
 
 
 def make_scalar_joint(pc, wC, wE, C_ref, E_ref, pen_scale=1.0, scenario=None):
     """标量化联合目标 F = wC·Cnorm + wE·Enorm + 惩罚(已与 F 同尺度)。"""
     def f(x):
-        C, E, pen, _ = objectives_joint(x, pc, pen_scale=pen_scale,
-                                        scenario=scenario)
-        return wC * (C / C_ref) + wE * (E / E_ref) + pen
+        C, E, pen, info = objectives_joint(x, pc, pen_scale=pen_scale,
+                                           scenario=scenario)
+        # Tier1 软抑制: 可穿越但不鼓励, 与 C/E 同台权衡(不进 pen, 故不影响可行性门控)
+        return (wC * (C / C_ref) + wE * (E / E_ref) + pen
+                + DENSITY["w_dense1"] * info["soft_dense1"])
     return f
 
 
