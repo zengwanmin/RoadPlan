@@ -51,7 +51,7 @@ import numpy as np
 from scipy.interpolate import splprep, splev
 
 from params import (CASE, EARTHWORK, TRAFFIC, ENERGY_PRICE, LONG_STD_100, LCC,
-                    FLAT_STD_100, BRIDGE_TUNNEL, DENSITY)
+                    FLAT_STD_100, BRIDGE_TUNNEL, DENSITY, PENALTY)
 from objective import (earthwork_cost, lcc_ping, fuel_energy, ev_energy,
                        entropy_weights, _grades)
 from data_loader import load_alignment
@@ -241,6 +241,15 @@ def set_corridor(half_w_m):
     CORRIDOR_HALF_W = float(half_w_m)
     PLANE_MODE_A1 = CORRIDOR_HALF_W
     MODE_AMPS = _mode_amps()
+
+
+DENSITY_ON = True      # 建筑密度约束总开关(供 A/B 对照关闭, 见 run_joint --no-density)
+
+
+def set_density(on):
+    """运行时开关建筑密度约束(Tier2 硬罚 + Tier1 软抑制)。关闭后二者均不计入目标。"""
+    global DENSITY_ON
+    DENSITY_ON = bool(on)
 
 
 def set_profile_step(step_m):
@@ -486,8 +495,10 @@ def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
     # 0.03(原值不变), 供 PJ1-PJ6 联合规模阶梯在不同步长下保持同一物理约束。
     dg_lim = 3e-4 * STEP_PROFILE_CTRL_M
     rel_V = np.maximum(0.0, (np.abs(np.diff(grades)) - dg_lim) / dg_lim)
-    pen = pen_scale * 10.0 * (rel_R.mean() + rel_R.max()
-                              + rel_V.mean() + rel_V.max())        # 竖曲线(式4.28-4.29)
+    # 【解耦】半径与竖曲线权重独立(params.PENALTY): 走廊带只管平面检索范围,
+    # 半径合规交给 k_R=30 的强惩罚, 而不再靠 A1=W 的构造压制(见 params.PENALTY 注释)。
+    pen = pen_scale * (PENALTY["k_R"] * (rel_R.mean() + rel_R.max())
+                       + PENALTY["k_V"] * (rel_V.mean() + rel_V.max()))
 
     # ---- 交叉桥斜交角约束(问题21) ----
     # 【净空罚项的校核否决(2026-08-12)】原方案含净空罚(设计线高出障碍物地面
@@ -502,7 +513,7 @@ def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
         th_min = np.radians(
             BRIDGE_TUNNEL["crossing_trigger"]["skew_min_deg"])
         rel_S = np.maximum(0.0, (th_min - cr["theta"][kp]) / th_min)
-        pen += pen_scale * 10.0 * (rel_S.mean() + rel_S.max())
+        pen += pen_scale * PENALTY["k_skew"] * (rel_S.mean() + rel_S.max())
 
     # 建筑密度 Tier2 严格禁行(硬约束, data 分支文档 §2.8)。
     # 用【禁区内深度】而非布尔掩膜: 布尔量在禁区内部梯度恒为 0, IJS 感受不到逃离方向;
@@ -510,8 +521,9 @@ def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
     # 注: Tier1 的软抑制【绝不能】加到 pen —— run_joint 的可行性门控是 pen<=1e-6,
     # 任何非零惩罚都会剔除候选, 若 Tier1 进 pen 则退化为硬约束, 而现状线位 M-A 自身
     # 就有 2.00 km 落在 Tier1, "允许在一定范围内穿越"的设计目标会被静默摧毁。
-    rel_D2 = d["dep2"] / DENSITY["depth_ref_m"]
-    pen = pen + pen_scale * DENSITY["k_forbid"] * (rel_D2.mean() + rel_D2.max())
+    rel_D2 = np.minimum(d["dep2"] / DENSITY["depth_ref_m"], DENSITY["rel_D2_clip"])
+    if DENSITY_ON:
+        pen = pen + pen_scale * DENSITY["k_forbid"] * (rel_D2.mean() + rel_D2.max())
 
     ic_seg = 0.5 * (d["ic"][:-1].astype(float) + d["ic"][1:].astype(float))
     L_ic_km = float(np.sum(ic_seg * np.diff(sta))) / 1000.0
@@ -541,8 +553,8 @@ def make_scalar_joint(pc, wC, wE, C_ref, E_ref, pen_scale=1.0, scenario=None):
         C, E, pen, info = objectives_joint(x, pc, pen_scale=pen_scale,
                                            scenario=scenario)
         # Tier1 软抑制: 可穿越但不鼓励, 与 C/E 同台权衡(不进 pen, 故不影响可行性门控)
-        return (wC * (C / C_ref) + wE * (E / E_ref) + pen
-                + DENSITY["w_dense1"] * info["soft_dense1"])
+        soft = DENSITY["w_dense1"] * info["soft_dense1"] if DENSITY_ON else 0.0
+        return (wC * (C / C_ref) + wE * (E / E_ref) + pen + soft)
     return f
 
 
@@ -640,7 +652,12 @@ def plane_lcc(L_m, L_eco_km=0.0, L_cross_km=None, ramp_cost=0.0):
 
 
 def make_scalar_plane(pc, C_ref_plane, pen_scale=1.0):
-    """第一阶段平面标量目标: min 平面LCC(交叉桥+生态隧道内生) + 平曲线半径惩罚(R>=400m)。"""
+    """第一阶段平面标量目标: min 平面LCC(交叉桥+生态隧道内生) + 平曲线半径惩罚(R>=400m)
+    + 建筑密度约束(Tier2 硬罚入 pen、Tier1 软抑制加到目标, 与联合口径一致)。
+
+    注: 若此处不含密度约束, Stage 1 可能冻结一条落入 Tier2 禁区的平面, Stage 2 只搜
+    纵断面无法逃出, 导致两阶段方案带隐藏的 pen>0 且与联合方案对比失真。故必须同口径。
+    """
     import crossings as _cr
     Rmin_req = FLAT_STD_100["R_extreme_m"]
 
@@ -658,7 +675,16 @@ def make_scalar_plane(pc, C_ref_plane, pen_scale=1.0):
             if len(cross["s"]) else np.zeros(0, dtype=bool)
         _, L_cross_m = _cr.bridge_intervals(cross, keep=keep)
         vio_R = np.maximum(0.0, (Rmin_req - R) / Rmin_req).mean()
+        # 建筑密度约束(沿密集平面点, 与 objectives_joint 同口径):
+        dep2 = building_mask.depth2_at_xy(xx, yy)
+        rel_D2 = np.minimum(dep2 / DENSITY["depth_ref_m"], DENSITY["rel_D2_clip"])
+        pen_D2 = pen_scale * DENSITY["k_forbid"] * (rel_D2.mean() + rel_D2.max())
+        t1 = building_mask.tier1_at_xy(xx, yy)
+        t1_seg = 0.5 * (t1[:-1].astype(float) + t1[1:].astype(float))
+        L_dense1_km = float(np.sum(t1_seg * seg)) / 1000.0
+        soft_dense1 = L_dense1_km / max(L_new / 1000.0, 1e-9)
+        dens = (pen_D2 + DENSITY["w_dense1"] * soft_dense1) if DENSITY_ON else 0.0
         return plane_lcc(L_new, L_eco_km, L_cross_km=L_cross_m / 1000.0,
                          ramp_cost=pc["ramp_cost"]) / C_ref_plane \
-            + pen_scale * 10.0 * vio_R
+            + pen_scale * PENALTY["k_R"] * vio_R + dens
     return f

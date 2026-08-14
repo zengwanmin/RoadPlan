@@ -33,6 +33,7 @@ import numpy as np
 from params import ALGO
 from data_loader import load_alignment
 from algorithms import run, VARIANTS
+import objective_joint as OJ
 from objective_joint import (make_plane_context, objectives_joint, decode_joint,
                              make_scalar_plane, build_plane_from_delta, plane_lcc,
                              joint_baseline, run_ijs_two_phase, START_AMP_M,
@@ -81,10 +82,19 @@ def main():
     global MAX_ITER
     ap = argparse.ArgumentParser()
     ap.add_argument("--smoke", action="store_true", help="冒烟测试(iter=5)")
+    ap.add_argument("--corridor", type=float, default=None,
+                    help="走廊带半宽 m(默认沿用模块设置 500)")
+    ap.add_argument("--no-density", action="store_true",
+                    help="关闭建筑密度约束(A/B 对照用)")
     args = ap.parse_args()
     if args.smoke:
         MAX_ITER = 5
         print(f"[冒烟] iter={MAX_ITER}")
+
+    # 走廊带必须在 make_plane_context 之前设置(影响模态幅值)
+    if args.corridor is not None:
+        OJ.set_corridor(args.corridor)
+    OJ.set_density(not args.no_density)
 
     t0 = time.time()
     align = load_alignment()
@@ -93,7 +103,8 @@ def main():
     print(f"[数据] 北环高速 {align['total_km']:.3f} km")
     print(f"[两阶段对照] dim={dim} (平面模态{N_MODE} + "
           f"纵断面{M_PROF}@{STEP_PROFILE_M:.0f}m), "
-          f"走廊带±{CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}")
+          f"走廊带±{OJ.CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}, "
+          f"密度约束={'ON' if OJ.DENSITY_ON else 'OFF'}")
 
     # ---------- M-A 现状方案 ----------
     x_A = make_existing_x(pc, dim)
@@ -157,7 +168,8 @@ def main():
     out = dict(
         meta=dict(dim=dim, n_mode=N_MODE, M_prof=M_PROF,
                   step_plane_m=STEP_PLANE_M, step_profile_m=STEP_PROFILE_M,
-                  corridor_half_w=CORRIDOR_HALF_W, pop_size=POP_SIZE,
+                  corridor_half_w=OJ.CORRIDOR_HALF_W, pop_size=POP_SIZE,
+                  density_on=bool(OJ.DENSITY_ON),
                   max_iter=MAX_ITER, wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
                   total_km=align["total_km"], Rmin_req=400,
                   smoke=bool(args.smoke),
@@ -173,7 +185,11 @@ def main():
         convergence_stage1=list(rP["curve"]),
         convergence_stage2=list(rC["curve"]),
     )
-    fn = "twostage_results_smoke.json" if args.smoke else "twostage_results.json"
+    if args.smoke:
+        fn = "twostage_results_smoke.json"
+    else:
+        tag = "dens" if OJ.DENSITY_ON else "nodens"
+        fn = f"twostage_results_w{int(OJ.CORRIDOR_HALF_W)}_{tag}.json"
     with open(os.path.join(RESULTS, fn), "w", encoding="utf-8") as fp:
         json.dump(out, fp, ensure_ascii=False, indent=2)
     print(f"[完成] {fn}  总耗时 {(time.time()-t0)/60:.1f} min")
