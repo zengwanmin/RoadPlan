@@ -276,17 +276,43 @@ def delta_from_modes(coef_norm):
     return (np.sin(np.outer(u, k) * np.pi) * a).sum(axis=1)
 
 
-def profile_from_grades(prof_norm, gz_ctrl, ds_ctrl, grade_max):
+def profile_from_grades(prof_norm, gz_ctrl, ds_ctrl, grade_max, z_tie=None):
     """
     由归一化纵断面变量生成变坡点设计高程。
 
     prof_norm[0]   : 起点高程相对该处地面的偏移(归一化到 ±START_AMP_M)
+                     —— 给定 z_tie 时该量被忽略(起点高程由接线高程锚定)
     prof_norm[1:]  : 各坡段纵坡(归一化到 ±grade_max) —— 纵坡约束由构造满足(式4.27)
-    设计高程由起点高程沿各段纵坡累加积分得到, 等价于论文式(4.22) 的变坡点高程 H_i。
+
+    z_tie=(z0, zL) 时对【首末设计高程】做精确锚定: 改扩建方案必须在起终点与既有
+    路网衔接(平面端点已由 build_plane 固定, 故接线点就是实测线首末点)。
+    做法是扣除归一化坡度向量的里程加权均值、再叠加所需均坡 g_req=(zL-z0)/S,
+    使 Σg·ds ≡ zL-z0 恒等成立; 波动幅度按 lam 缩放以【仍由构造保证】|g|≤grade_max,
+    且在无需缩放时取 lam=1, 从而实测基准 M-A 被逐段精确复现。
+
+    不锚定时端点高程自由: 优化器会把全线整体下倾(燃油模型 max(HPex,0) 下坡不
+    回收, 净下坡等于白拿油耗), 实测到起点填高 20 m(顶满 START_AMP_M)、终点深挖
+    30 m 的不可接线纵断面, 故默认口径应传入 z_tie。
     """
-    z0 = gz_ctrl[0] + (float(prof_norm[0]) - 0.5) * 2.0 * START_AMP_M
-    g = (np.asarray(prof_norm[1:], float) - 0.5) * 2.0 * grade_max
-    return np.concatenate([[z0], z0 + np.cumsum(g * ds_ctrl)])
+    ds = np.asarray(ds_ctrl, float)
+    if z_tie is None:
+        z0 = gz_ctrl[0] + (float(prof_norm[0]) - 0.5) * 2.0 * START_AMP_M
+        g = (np.asarray(prof_norm[1:], float) - 0.5) * 2.0 * grade_max
+        return np.concatenate([[z0], z0 + np.cumsum(g * ds)])
+
+    z0, zL = float(z_tie[0]), float(z_tie[1])
+    S = float(ds.sum())
+    g_req = (zL - z0) / S                       # 满足端点锚定所需的里程加权均坡
+    h = (np.asarray(prof_norm[1:], float) - 0.5) * 2.0      # ∈[-1,1]
+    hbar = float((h * ds).sum() / S)            # 里程加权均值 -> 扣除后净高差为 0
+    dh = h - hbar
+    m = float(np.max(np.abs(dh))) if dh.size else 0.0
+    room = grade_max - abs(g_req)               # 叠加 g_req 后留给波动的坡度余量
+    lam = 1.0 if m * grade_max <= room else max(0.0, room / (m * grade_max))
+    g = g_req + lam * dh * grade_max            # Σg·ds = g_req·S = zL-z0, |g|≤grade_max
+    z = np.concatenate([[z0], z0 + np.cumsum(g * ds)])
+    z[-1] = zL                                  # 消除累加浮点残差
+    return z
 
 
 def build_plane(pc, delta):
@@ -379,8 +405,11 @@ def decode_joint(x, pc):
     gz_ctrl = dem.ground_elev_xy(x_ctrl, y_ctrl, pc["lat0"], pc["lon0"],
                                  natural=True)
     ds_ctrl = np.diff(sta_ctrl)
+    # 端点锚定: 首末设计高程 = 实测路面高程(既有路网接线高程)。平面端点已由
+    # build_plane 固定, 故所有候选线位的接线点与实测线首末点是同一物理位置。
+    z_tie = (float(pc["gz_meas"][0]), float(pc["gz_meas"][-1]))
     design_z_ctrl = profile_from_grades(x[N_MODE:], gz_ctrl, ds_ctrl,
-                                        LONG_STD_100["grade_max"])
+                                        LONG_STD_100["grade_max"], z_tie=z_tie)
     design_z = np.interp(sta, sta_ctrl, design_z_ctrl)
 
     # 各评价坡段的平曲线半径: 曲率沿弧长插值到评价桩号, 再取相邻桩号曲率均值,

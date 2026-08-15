@@ -136,6 +136,8 @@ def main():
                     help="走廊带半宽 m(默认沿用模块设置 500)")
     ap.add_argument("--no-density", action="store_true",
                     help="关闭建筑密度约束(A/B 对照用)")
+    ap.add_argument("--pareto", type=int, default=21,
+                    help="Pareto 权重扫描点数(默认21; 减少可显著缩短总耗时)")
     args = ap.parse_args()
 
     # 走廊带必须在 make_plane_context 之前设置(影响模态幅值 -> 平面上下文)
@@ -148,7 +150,7 @@ def main():
     pc = make_plane_context(align)
     dim = DIM
     lb, ub = np.zeros(dim), np.ones(dim)
-    n_pareto = 21
+    n_pareto = args.pareto
     if args.smoke:
         MAX_ITER = 5
         n_pareto = 3
