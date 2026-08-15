@@ -23,6 +23,8 @@ from params import BRIDGE_TUNNEL
 
 _TRIG = BRIDGE_TUNNEL["crossing_trigger"]
 _GRID_CELL = 250.0
+_KEY_MUL = 1_000_000     # cell 键编码 cx*_KEY_MUL+cy (|cell 索引|<<50万, 保序)
+_PAIR_MUL = 10_000_000   # (段,障碍)对编码 ia*_PAIR_MUL+ib (障碍数~3万<<1千万)
 
 _OBS = None          # 惰性单例: dict(px1,py1,px2,py2,width,hclear,kind_code,grid)
 _KIND_NAMES = ("road", "rail", "water")
@@ -89,8 +91,18 @@ def _load_obstacles(lat0, lon0):
             for cy in range(cy_min[i], cy_max[i] + 1):
                 grid.setdefault((cx, cy), []).append(i)
     grid = {c: np.asarray(v, dtype=int) for c, v in grid.items()}
+    # CSR 形式(供 detect_crossings 向量化候选收集, 避免逐 cell 字典查询+concatenate+unique):
+    #   cells 按 (cx,cy) 排序; cell_start 为前缀和偏移; cell_obs 为按同序拼接的障碍段索引。
+    cells = sorted(grid.keys())
+    kx = np.array([c[0] for c in cells], dtype=np.int64)
+    ky = np.array([c[1] for c in cells], dtype=np.int64)
+    lens = np.array([len(grid[c]) for c in cells], dtype=np.int64)
+    cell_start = np.concatenate([[0], np.cumsum(lens)])
+    cell_obs = (np.concatenate([grid[c] for c in cells]).astype(np.int64)
+                if cells else np.empty(0, dtype=np.int64))
     _OBS = dict(px1=px1, py1=py1, px2=px2, py2=py2,
-                width=width, hclear=hclear, kcode=kcode, grid=grid)
+                width=width, hclear=hclear, kcode=kcode, grid=grid,
+                csr=dict(kx=kx, ky=ky, cell_start=cell_start, cell_obs=cell_obs))
     return _OBS
 
 
@@ -115,27 +127,39 @@ def detect_crossings(xx, yy, lat0, lon0, step_m=50.0):
     px1, py1 = obs["px1"], obs["py1"]
     px2, py2 = obs["px2"], obs["py2"]
 
+    # --- 向量化候选收集(CSR 网格) ---
+    # 段 bbox 覆盖的 cell 用二分定位(cell 键编码为单个 int64), 候选障碍段按 CSR 切片取出。
+    # 最后对 (段,障碍) 对去重: 障碍横跨多 cell 时会重复出现, 而下游求交不去重,
+    # 重复会把同一交点计两次 -> 桥长多算。去重后与旧实现的逐段 unique 结果完全一致。
+    csr = obs["csr"]
+    ckey = csr["kx"] * _KEY_MUL + csr["ky"]      # 已随 kx,ky 排序(先 x 后 y)升序
+    cell_start, cell_obs = csr["cell_start"], csr["cell_obs"]
+    cx0 = np.floor(np.minimum(ax[:-1], ax[1:]) / _GRID_CELL).astype(np.int64)
+    cx1 = np.floor(np.maximum(ax[:-1], ax[1:]) / _GRID_CELL).astype(np.int64)
+    cy0 = np.floor(np.minimum(ay[:-1], ay[1:]) / _GRID_CELL).astype(np.int64)
+    cy1 = np.floor(np.maximum(ay[:-1], ay[1:]) / _GRID_CELL).astype(np.int64)
     ia_l, ib_l = [], []
     for i in range(n - 1):
-        cx0 = int(np.floor(min(ax[i], ax[i+1]) / _GRID_CELL))
-        cx1 = int(np.floor(max(ax[i], ax[i+1]) / _GRID_CELL))
-        cy0 = int(np.floor(min(ay[i], ay[i+1]) / _GRID_CELL))
-        cy1 = int(np.floor(max(ay[i], ay[i+1]) / _GRID_CELL))
-        cand = []
-        for cx in range(cx0, cx1 + 1):
-            for cy in range(cy0, cy1 + 1):
-                g = grid.get((cx, cy))
-                if g is not None:
-                    cand.append(g)
-        if cand:
-            c = np.unique(np.concatenate(cand))
-            ia_l.append(np.full(len(c), i, dtype=int))
-            ib_l.append(c)
+        for cx in range(cx0[i], cx1[i] + 1):
+            base = cx * _KEY_MUL
+            # 该 cx 列内 cy0..cy1 的 cell 键区间, 二分批量定位
+            lo = np.searchsorted(ckey, base + cy0[i])
+            hi = np.searchsorted(ckey, base + cy1[i], side="right")
+            for j in range(lo, hi):
+                s0, s1 = cell_start[j], cell_start[j + 1]
+                if s1 > s0:
+                    ib_l.append(cell_obs[s0:s1])
+                    ia_l.append(np.full(s1 - s0, i, dtype=np.int64))
     if not ia_l:
         return dict(s=np.empty(0), theta=np.empty(0), width=np.empty(0),
                     hclear=np.empty(0), kcode=np.empty(0, dtype=np.int8),
                     x=np.empty(0), y=np.empty(0))
     ia = np.concatenate(ia_l); ib = np.concatenate(ib_l)
+    # (段,障碍) 对去重
+    pair = ia * _PAIR_MUL + ib
+    uniq = np.unique(pair)
+    ia = (uniq // _PAIR_MUL).astype(int)
+    ib = (uniq % _PAIR_MUL).astype(int)
 
     # 矢量化线段求交: A=(p, r), B=(q, w); t=cross(q-p,w)/cross(r,w), u=cross(q-p,r)/...
     rpx = ax[ia + 1] - ax[ia]; rpy = ay[ia + 1] - ay[ia]

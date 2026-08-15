@@ -31,6 +31,7 @@ from params import ALGO, CASE
 from data_loader import load_alignment
 from algorithms import run, VARIANTS
 from objective import entropy_weights
+import objective_joint as OJ
 from objective_joint import (make_plane_context, objectives_joint,
                              make_scalar_joint, decode_joint, joint_baseline,
                              run_ijs_two_phase, START_AMP_M,
@@ -52,9 +53,12 @@ _PC = None
 _CTX = None      # dict(C_ref, E_ref, pop0, lb, ub, max_iter)
 
 
-def _init_worker(align, ctx):
-    """worker 初始化: 重建 plane context(含 cKDTree)与共享寻优上下文, 每进程一次。"""
+def _init_worker(align, ctx, corridor, density_on):
+    """worker 初始化: 重建 plane context(含 cKDTree)与共享寻优上下文, 每进程一次。
+    先同步走廊带与密度开关(fork 会继承, 但 spawn 不会 -> 显式设置更稳健)。"""
     global _PC, _CTX
+    OJ.set_corridor(corridor)
+    OJ.set_density(density_on)
     _PC = make_plane_context(align)
     _CTX = ctx
 
@@ -128,7 +132,16 @@ def main():
                     help="冒烟测试(iter=5, Pareto 仅 3 个权重点)")
     ap.add_argument("--workers", type=int, default=0,
                     help="并行进程数(默认: 按任务数与 CPU 核数自适应)")
+    ap.add_argument("--corridor", type=float, default=None,
+                    help="走廊带半宽 m(默认沿用模块设置 500)")
+    ap.add_argument("--no-density", action="store_true",
+                    help="关闭建筑密度约束(A/B 对照用)")
     args = ap.parse_args()
+
+    # 走廊带必须在 make_plane_context 之前设置(影响模态幅值 -> 平面上下文)
+    if args.corridor is not None:
+        OJ.set_corridor(args.corridor)
+    OJ.set_density(not args.no_density)
 
     t0 = time.time()
     align = load_alignment()
@@ -142,7 +155,8 @@ def main():
         print(f"[冒烟] iter={MAX_ITER}, Pareto 权重点={n_pareto}")
     print(f"[数据] 北环高速 {align['total_km']:.3f} km")
     print(f"[联合] 决策维度 dim={dim} (平面模态{N_MODE} + 纵断面{M_PROF}), "
-          f"走廊带±{CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}")
+          f"走廊带±{OJ.CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}, "
+          f"密度约束={'ON' if OJ.DENSITY_ON else 'OFF'}")
 
     # ---------- 熵权法权重(基准种群客观确定, 式5.3-5.4) ----------
     # 由 joint_baseline 统一产出, 两阶段对照(run_twostage.py)共用同一组
@@ -178,7 +192,7 @@ def main():
 
     solved = {}
     with mp.Pool(n_workers, initializer=_init_worker,
-                 initargs=(align, ctx)) as pool:
+                 initargs=(align, ctx, OJ.CORRIDOR_HALF_W, OJ.DENSITY_ON)) as pool:
         for k, rec in enumerate(pool.imap_unordered(_solve_one, tasks), 1):
             solved[rec["tag"]] = rec
             el = time.time() - t0
@@ -270,7 +284,8 @@ def main():
 
     out = dict(
         meta=dict(dim=dim, n_mode=N_MODE, M_prof=M_PROF,
-                  corridor_half_w=CORRIDOR_HALF_W, pop_size=POP_SIZE,
+                  corridor_half_w=OJ.CORRIDOR_HALF_W, pop_size=POP_SIZE,
+                  density_on=bool(OJ.DENSITY_ON),
                   max_iter=MAX_ITER, wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
                   total_km=align["total_km"], Rmin_req=400,
                   step_plane_m=STEP_PLANE_M, step_profile_m=STEP_PROFILE_M,
@@ -279,7 +294,8 @@ def main():
                   energy_unit="全生命周期元(亿元)",
                   note="平纵联合协同优化(准天然地面DEM口径): 立交7.8km常数计费"
                        "+桩号带土方豁免, 白云山隧道由生态区穿越长度内生, "
-                       f"走廊带±{CORRIDOR_HALF_W:.0f}m; M-C=前沿熵权决策"
+                       f"走廊带±{OJ.CORRIDOR_HALF_W:.0f}m, 密度约束="
+                       f"{'ON' if OJ.DENSITY_ON else 'OFF'}; M-C=前沿熵权决策"
                        "(可行+预算约束C≤1.1×现状+非支配+熵权, 论文第5章流程)"),
         M_A=res_A, M_B=res_B, M_C=res_C, M_C_scalar=res_C_scalar,
         pareto=pareto, pareto_sweep=pareto_sweep, entropy_point=entropy_point,
@@ -287,7 +303,11 @@ def main():
         measured=dict(x=align["X"].tolist(), y=align["Y"].tolist()),
         convergence=rC["curve"], convergence_B=rB["curve"],
     )
-    fn = "joint_results_smoke.json" if args.smoke else "joint_results.json"
+    if args.smoke:
+        fn = "joint_results_smoke.json"
+    else:
+        tag = "dens" if OJ.DENSITY_ON else "nodens"
+        fn = f"joint_results_w{int(OJ.CORRIDOR_HALF_W)}_{tag}.json"
     with open(os.path.join(RESULTS, fn), "w", encoding="utf-8") as fp:
         json.dump(out, fp, ensure_ascii=False, indent=2)
     print(f"[完成] {fn}  总耗时 {(time.time()-t0)/60:.1f} min")
