@@ -1,9 +1,12 @@
 # 当前模型确认性实验协议（冻结版 1）
 
-冻结日期：2026-08-17（Asia/Shanghai）  
-上游代码提交：`ce69f0ed`  
-权威单次结果：`joint_results_w500_dens.json`，SHA-256
+协议修订日期：2026-08-18（Asia/Shanghai）
+
+模型逻辑基线：`ce69f0ed`（固定端点）；运行时代码、数据和结果由强配置指纹冻结。
+
+权威单次结果：重新生成的 `joint_results_w500_dens.json`。旧哈希
 `e7c652922252f97f906c55cef550b9181a360d5bd6fbdf073db42ed97c22291d`
+属于自由端点历史结果，当前脚本必须拒绝读取。新 SHA-256 由正式 W500 运行完成后写入。
 
 ## 1. 目的
 
@@ -57,12 +60,15 @@
 
 ## 6. 运行顺序
 
-1. `python tests/test_protocol.py`
-2. `python run_confirmatory.py --smoke --workers 2`
-3. 检查所有算法 `nfe_exact=true`、参数化等价测试与可行基准；
-4. `python run_confirmatory.py --workers <N>` 启动确认性长跑；
-5. 运行统计与制图脚本；
-6. 将结果只写入新的 v4 论文目录，并重新交给独立审稿 agent。
+1. 在上游目录运行 `python run_joint.py --corridor 500 --pareto 21 --workers 12 --fresh`；
+2. 运行 `python run_twostage.py --corridor 500 --joint-result results/joint_results_w500_dens.json --fresh`；
+3. 运行 `python make_outputs.py`，其必须校验两个结果的哈希绑定后才生成 C2/C3；
+4. `python tests/test_protocol.py` 与 `python tests/test_resume_guards.py`；
+5. `python run_confirmatory.py --smoke --workers 2 --fresh`；
+6. 检查所有算法 `nfe_exact=true`、参数化等价测试与可行基准；
+7. `python run_confirmatory.py --workers 12 --fresh` 启动全新确认性长跑；
+8. 中断后只用不带 `--fresh` 的同一命令续跑；任何配置指纹变化必须拒绝续接；
+9. 运行统计与制图脚本，并更新最终论文目录。
 
 ## 7. 稳健性队列（主比较之后运行）
 

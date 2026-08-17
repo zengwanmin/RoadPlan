@@ -2,8 +2,8 @@
 """
 make_outputs.py — 由【平纵联合协同优化】结果生成实验三全部图表
 
-数据源: results/joint_results.json (run_joint.py 输出, 三方案 M-A/M-B/M-C 均为联合模型)
-        results/twostage_results.json (run_twostage.py 输出, 两阶段对照, 供表C3)
+数据源: results/joint_results_w500_dens.json (run_joint.py 输出, 当前固定端点 W500 主结果)
+        results/twostage_results_w500_dens.json (run_twostage.py 输出, 两阶段对照, 供表C3)
 表: 表C1(三模式四维指标 + M-B→M-C 变化率)  表C2(现状 M-A vs 本文 M-C 关键指标 + 变化%)
     表C3(现状/两阶段/平纵联合协同 三方案对比表)
 图: 图C1(Pareto解集+熵权决策点)
@@ -17,7 +17,7 @@ make_outputs.py — 由【平纵联合协同优化】结果生成实验三全部
     图C9(全图层叠加: DEM + OSM 路网/铁路/水系 + OSM 建筑 + 最终线位 M-C + 桥隧段标注)
 图的横轴/纵轴/图例/图名均为英文。能耗单位 元/日, 桥隧费用 0。
 """
-import os, json, csv
+import os, json, csv, argparse, hashlib
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -28,8 +28,8 @@ from params import DESIGN_STD   # 表6.4 竖曲线半径(供图C3竖曲线平滑
 from alllayers import fig_C9_alllayers   # 图C9 全图层叠加(DEM+OSM+建筑+线位+桥隧)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RES = os.path.join(HERE, "results", "joint_results.json")
-RES_TWO = os.path.join(HERE, "results", "twostage_results.json")  # 两阶段对照(run_twostage.py)
+RES = os.path.join(HERE, "results", "joint_results_w500_dens.json")
+RES_TWO = os.path.join(HERE, "results", "twostage_results_w500_dens.json")
 FIG = os.path.join(HERE, "figures"); TAB = os.path.join(HERE, "tables")
 os.makedirs(FIG, exist_ok=True); os.makedirs(TAB, exist_ok=True)
 
@@ -49,6 +49,68 @@ C_YI = 1e8   # 元 -> 亿元
 def load():
     with open(RES, encoding="utf-8") as f:
         return json.load(f)
+
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fp:
+        for chunk in iter(lambda: fp.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _fingerprint(data):
+    raw = json.dumps(data, ensure_ascii=False, sort_keys=True,
+                     separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _validate_sources(d):
+    """Fail closed before writing any table or figure from stale mixed sources."""
+    provenance = d.get("provenance", {})
+    config = provenance.get("config")
+    fingerprint = provenance.get("config_fingerprint")
+    if not isinstance(config, dict) or fingerprint != _fingerprint(config):
+        raise RuntimeError(
+            "Joint result has no valid current provenance fingerprint; "
+            "rerun run_joint.py instead of generating outputs from a legacy JSON.")
+    if (float(config.get("corridor_half_w", -1)) != 500.0 or
+            config.get("density_on") is not True or config.get("smoke") is not False):
+        raise RuntimeError("Main-paper outputs require full W500 density-enabled results")
+    if not os.path.isfile(RES_TWO):
+        raise FileNotFoundError(
+            "Current two-stage result is required for Table C3; rerun run_twostage.py")
+    with open(RES_TWO, encoding="utf-8") as fp:
+        two_stage = json.load(fp)
+    two_provenance = two_stage.get("provenance", {})
+    if two_provenance.get("joint_result_sha256") != _sha256_file(RES):
+        raise RuntimeError(
+            "Two-stage result is not bound to this exact W500 joint result; "
+            "refusing to generate a mixed-version Table C3.")
+    for label, payload in (("joint", d.get("M_C", {})),
+                           ("two-stage", two_stage.get("M_C", {}))):
+        if (float(payload.get("penalty", float("inf"))) > 1e-6 or
+                float(payload.get("Rmin", -float("inf"))) < 400.0 - 1e-6):
+            raise RuntimeError(
+                f"{label} M-C is infeasible; refusing to label Table C3 as R>=400")
+    return two_stage
+
+
+def _write_source_provenance(d, two_stage):
+    payload = {
+        "schema": "current-output-sources-v1",
+        "joint_result": os.path.relpath(RES, HERE),
+        "joint_result_sha256": _sha256_file(RES),
+        "joint_config_fingerprint": d["provenance"]["config_fingerprint"],
+        "two_stage_result": os.path.relpath(RES_TWO, HERE),
+        "two_stage_result_sha256": _sha256_file(RES_TWO),
+        "two_stage_joint_binding": two_stage["provenance"]["joint_result_sha256"],
+    }
+    path = os.path.join(TAB, "SOURCE_PROVENANCE.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
 
 def _write_table(name, hdr, rows):
@@ -404,10 +466,21 @@ def fig_C8(d):
 
 
 def main():
+    global RES, RES_TWO
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--result", default=RES,
+                    help="当前联合主结果，默认W500密度开启结果")
+    ap.add_argument("--two-stage", default=RES_TWO,
+                    help="与当前联合结果绑定的两阶段对照结果")
+    args = ap.parse_args()
+    RES = os.path.abspath(args.result)
+    RES_TWO = os.path.abspath(args.two_stage)
     d = load()
+    two_stage = _validate_sources(d)
     table_C1(d); table_C2(d); table_C3(d)
     fig_C1(d); fig_C2(d); fig_C3(d); fig_C4(d); fig_C5(d); fig_C6(d); fig_C7(d); fig_C8(d)
     fig_C9_alllayers(d, _save)
+    _write_source_provenance(d, two_stage)
     print("[完成] 全部图表已输出到 figures/ 与 tables/")
 
 

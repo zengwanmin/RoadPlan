@@ -20,7 +20,7 @@ run_joint.py — 优化方案对比主程序（平纵断面联合协同优化, p
 数据: 数据.xlsx (北环高速实测)   公式: 林坤锐学位论文(式号见 objective*.py)
 能耗单位: 全生命周期货币量(亿元, 与C同口径)   桥隧费用: 0(系数论文未给, 见 params/分析总结)
 """
-import os, json, time, argparse, multiprocessing as mp
+import os, json, time, argparse, hashlib, subprocess, multiprocessing as mp
 # 多进程下禁用 BLAS 内部多线程(每进程 1 核), 必须在 import numpy 之前设置。
 for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
            "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
@@ -42,6 +42,20 @@ from safety import hazard_profile
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.path.join(HERE, "results"); os.makedirs(RESULTS, exist_ok=True)
 
+SOURCE_FINGERPRINT_FILES = (
+    "run_joint.py", "objective_joint.py", "objective.py", "algorithms.py",
+    "params.py", "data_loader.py", "dem.py", "building_mask.py",
+    "crossings.py", "safety.py",
+)
+DATA_FINGERPRINT_FILES = (
+    os.path.join("数据", "数据.xlsx"),
+    os.path.join("数据", "走廊带DEM_z14_ext.npz"),
+    os.path.join("数据", "走廊带DEM_z14_ext_natural.npz"),
+    os.path.join("数据", "OSM走廊带障碍物", "density_tiers_V1.npz"),
+    os.path.join("数据", "OSM走廊带障碍物", "obstacles.npz"),
+    os.path.join("数据", "OSM走廊带障碍物", "ic_anchor_cache.json"),
+)
+
 POP_SIZE = ALGO["pop_size"]     # 200 (用户指定)
 MAX_ITER = 1000                 # 联合优化迭代次数(用户指定 1000)
 # 说明: 联合为单次 IJS, 总求值量 ≈ POP + 3·POP·iter = 200 + 3·200·1000 = 600,200,
@@ -51,6 +65,87 @@ MAX_ITER = 1000                 # 联合优化迭代次数(用户指定 1000)
 # ---- worker 进程内的全局(由 initializer 设定, 兼容 macOS spawn) ----
 _PC = None
 _CTX = None      # dict(C_ref, E_ref, pop0, lb, ub, max_iter)
+
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fp:
+        for chunk in iter(lambda: fp.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _sha256_array(a):
+    a = np.ascontiguousarray(np.asarray(a, dtype="<f8"))
+    h = hashlib.sha256()
+    h.update(str(a.shape).encode("ascii"))
+    h.update(b"|<f8|")
+    h.update(a.tobytes(order="C"))
+    return h.hexdigest()
+
+
+def _fingerprint(data):
+    raw = json.dumps(data, ensure_ascii=False, sort_keys=True,
+                     separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _atomic_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fp:
+        json.dump(data, fp, ensure_ascii=False, indent=2)
+        fp.flush()
+        os.fsync(fp.fileno())
+    os.replace(tmp, path)
+
+
+def _git_head():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=HERE, text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _file_manifest():
+    repo_root = os.path.dirname(HERE)
+    files = {}
+    for name in SOURCE_FINGERPRINT_FILES:
+        path = os.path.join(HERE, name)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Missing source file required by fingerprint: {path}")
+        files[os.path.relpath(path, repo_root)] = _sha256_file(path)
+    for name in DATA_FINGERPRINT_FILES:
+        path = os.path.join(repo_root, name)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Missing input file required by fingerprint: {path}")
+        files[name] = _sha256_file(path)
+    return files
+
+
+def _load_checkpoint(path, config, expected_tags, fresh=False):
+    """Return prior records only for a byte-for-byte compatible experiment."""
+    fingerprint = _fingerprint(config)
+    if fresh or not os.path.exists(path):
+        return dict(schema="joint-checkpoint-v1", config=config,
+                    config_fingerprint=fingerprint, records=[])
+    with open(path, encoding="utf-8") as fp:
+        state = json.load(fp)
+    old_fingerprint = state.get("config_fingerprint")
+    if old_fingerprint != fingerprint:
+        raise RuntimeError(
+            "Checkpoint configuration mismatch; refusing to mix old and new results. "
+            f"old={old_fingerprint!r}, current={fingerprint!r}. "
+            "Archive the old checkpoint and rerun with --fresh only if intentional.")
+    records = state.get("records")
+    if not isinstance(records, list):
+        raise RuntimeError("Checkpoint records must be a list")
+    tags = [r.get("tag") for r in records]
+    if len(tags) != len(set(tags)) or not set(tags) <= set(expected_tags):
+        raise RuntimeError("Checkpoint contains duplicate or unexpected task tags")
+    # Replace non-fingerprinted timestamps while preserving immutable config.
+    state["config"] = config
+    return state
 
 
 def _init_worker(align, ctx, corridor, density_on):
@@ -138,12 +233,22 @@ def main():
                     help="关闭建筑密度约束(A/B 对照用)")
     ap.add_argument("--pareto", type=int, default=21,
                     help="Pareto 权重扫描点数(默认21; 减少可显著缩短总耗时)")
+    ap.add_argument("--fresh", action="store_true",
+                    help="忽略并覆盖同名检查点；默认仅续跑完全相同配置")
     args = ap.parse_args()
 
     # 走廊带必须在 make_plane_context 之前设置(影响模态幅值 -> 平面上下文)
     if args.corridor is not None:
         OJ.set_corridor(args.corridor)
     OJ.set_density(not args.no_density)
+
+    if args.smoke:
+        result_name = "joint_results_smoke.json"
+    else:
+        density_tag = "dens" if OJ.DENSITY_ON else "nodens"
+        result_name = f"joint_results_w{int(OJ.CORRIDOR_HALF_W)}_{density_tag}.json"
+    result_path = os.path.join(RESULTS, result_name)
+    partial_path = result_path.replace(".json", ".partial.json")
 
     t0 = time.time()
     align = load_alignment()
@@ -169,6 +274,23 @@ def main():
 
     pop0 = base.copy()          # M-B/M-C/Pareto 共享同一初始种群保证公平
 
+    config = dict(
+        schema="joint-main-resume-v1",
+        repository_head=_git_head(),
+        corridor_half_w=float(OJ.CORRIDOR_HALF_W),
+        density_on=bool(OJ.DENSITY_ON), smoke=bool(args.smoke),
+        dim=int(dim), n_mode=int(N_MODE), M_prof=int(M_PROF),
+        pop_size=int(POP_SIZE), max_iter=int(MAX_ITER),
+        n_pareto=int(n_pareto), optimizer_seed=1000,
+        baseline_seed=2025, step_plane_m=float(STEP_PLANE_M),
+        step_profile_m=float(STEP_PROFILE_M),
+        weights=dict(wC=float(wC), wE=float(wE)),
+        reference_scales=dict(C_ref=float(C_ref), E_ref=float(E_ref)),
+        initial_population_sha256=_sha256_array(pop0),
+        existing_solution_sha256=_sha256_array(x_A),
+        files=_file_manifest(),
+    )
+
     # ---------- M-A 现状方案(人工选线, 未优化) ----------
     res_A = evaluate_joint(x_A, pc)
     print(f"[M-A] C={res_A['C']/1e8:.4f}亿 E={res_A['E']/1e8:.4f}亿(全周期) "
@@ -186,21 +308,37 @@ def main():
               dict(tag="M_C", wC=wC, wE=wE, seed=1000)]
              + [dict(tag=f"pareto_{k}", wC=float(w), wE=float(1 - w), seed=1000)
                 for k, w in enumerate(w_grid)])
+    expected_tags = [task["tag"] for task in tasks]
+    checkpoint = _load_checkpoint(partial_path, config, expected_tags,
+                                  fresh=bool(args.fresh))
+    solved = {record["tag"]: record for record in checkpoint["records"]}
+    tasks = [task for task in tasks if task["tag"] not in solved]
+    _atomic_json(partial_path, checkpoint)
     ctx = dict(C_ref=C_ref, E_ref=E_ref, pop0=pop0, lb=lb, ub=ub,
                max_iter=MAX_ITER)
-    n_workers = args.workers or min(len(tasks), max(1, (os.cpu_count() or 2) - 2))
-    print(f"[并行] {len(tasks)} 个寻优任务 (M-B, M-C, Pareto×{n_pareto}), "
+    n_workers = args.workers or min(max(len(tasks), 1),
+                                    max(1, (os.cpu_count() or 2) - 2))
+    print(f"[并行] 剩余 {len(tasks)}/{len(expected_tags)} 个寻优任务 "
+          f"(M-B, M-C, Pareto×{n_pareto}), "
           f"{n_workers} 进程", flush=True)
 
-    solved = {}
-    with mp.Pool(n_workers, initializer=_init_worker,
-                 initargs=(align, ctx, OJ.CORRIDOR_HALF_W, OJ.DENSITY_ON)) as pool:
-        for k, rec in enumerate(pool.imap_unordered(_solve_one, tasks), 1):
-            solved[rec["tag"]] = rec
-            el = time.time() - t0
-            print(f"  [{k:2d}/{len(tasks)}] {rec['tag']:10s} wC={rec['wC']:.2f} "
-                  f"C={rec['C']/1e8:.4f}亿 E={rec['E']/1e8:.4f}亿 pen={rec['pen']:.1e} "
-                  f"| 用时{el/60:.1f}min ETA{el/k*(len(tasks)-k)/60:.1f}min", flush=True)
+    if tasks:
+        with mp.Pool(n_workers, initializer=_init_worker,
+                     initargs=(align, ctx, OJ.CORRIDOR_HALF_W, OJ.DENSITY_ON)) as pool:
+            for k, rec in enumerate(pool.imap_unordered(_solve_one, tasks), 1):
+                solved[rec["tag"]] = rec
+                checkpoint["records"] = [solved[tag] for tag in expected_tags if tag in solved]
+                _atomic_json(partial_path, checkpoint)
+                el = time.time() - t0
+                print(f"  [{len(solved):2d}/{len(expected_tags)}] {rec['tag']:10s} "
+                      f"wC={rec['wC']:.2f} C={rec['C']/1e8:.4f}亿 "
+                      f"E={rec['E']/1e8:.4f}亿 pen={rec['pen']:.1e} "
+                      f"| 本次用时{el/60:.1f}min "
+                      f"ETA{el/k*(len(tasks)-k)/60:.1f}min", flush=True)
+
+    missing = sorted(set(expected_tags) - set(solved))
+    if missing:
+        raise RuntimeError(f"Incomplete joint experiment; missing tasks: {missing}")
 
     # ---------- M-B 单目标成本最优 ----------
     rB = solved["M_B"]
@@ -271,6 +409,12 @@ def main():
     print(f"[M-C] C={res_C['C']/1e8:.4f}亿 E={res_C['E']/1e8:.4f}亿(全周期) "
           f"L={res_C['L_km']:.3f}km Rmin={res_C['Rmin']:.0f}m pen={res_C['penalty']:.2e} "
           f"Q={res_C['Q_mean']:.3f}")
+    if (not args.smoke and
+            (res_C["penalty"] > 1e-6 or res_C["Rmin"] < 400.0 - 1e-6)):
+        raise RuntimeError(
+            "Selected M-C is not publication-feasible: "
+            f"penalty={res_C['penalty']:.6g}, Rmin={res_C['Rmin']:.6g}. "
+            "Checkpoint retained for diagnosis; no authoritative result was overwritten.")
 
     # 图C1 沿用中间区间(0.1-0.9)作参考前沿, 保持与原图口径一致
     pareto = [dict(w1=p["w1"], C=p["C"], E=p["E"], pen=p["pen"])
@@ -299,20 +443,17 @@ def main():
                        f"走廊带±{OJ.CORRIDOR_HALF_W:.0f}m, 密度约束="
                        f"{'ON' if OJ.DENSITY_ON else 'OFF'}; M-C=前沿熵权决策"
                        "(可行+预算约束C≤1.1×现状+非支配+熵权, 论文第5章流程)"),
+        provenance=dict(config_fingerprint=_fingerprint(config), config=config),
         M_A=res_A, M_B=res_B, M_C=res_C, M_C_scalar=res_C_scalar,
         pareto=pareto, pareto_sweep=pareto_sweep, entropy_point=entropy_point,
         length_reduction_pct=reduce_pct,
         measured=dict(x=align["X"].tolist(), y=align["Y"].tolist()),
         convergence=rC["curve"], convergence_B=rB["curve"],
     )
-    if args.smoke:
-        fn = "joint_results_smoke.json"
-    else:
-        tag = "dens" if OJ.DENSITY_ON else "nodens"
-        fn = f"joint_results_w{int(OJ.CORRIDOR_HALF_W)}_{tag}.json"
-    with open(os.path.join(RESULTS, fn), "w", encoding="utf-8") as fp:
-        json.dump(out, fp, ensure_ascii=False, indent=2)
-    print(f"[完成] {fn}  总耗时 {(time.time()-t0)/60:.1f} min")
+    _atomic_json(result_path, out)
+    if os.path.exists(partial_path):
+        os.unlink(partial_path)
+    print(f"[完成] {result_name}  总耗时 {(time.time()-t0)/60:.1f} min")
 
 
 if __name__ == "__main__":

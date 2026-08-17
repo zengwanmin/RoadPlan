@@ -32,8 +32,18 @@ The scientific rationale and pre-specified tests are in `PROTOCOL.md`.
 
 ## Reproduction
 
+正式确认性实验只有在固定端点 W500 联合主结果及其两阶段对照重新生成后才允许启动。
+旧108条混合口径结果已归档在 Git 标签
+`archive/pre-ce69-w500-fixed-endpoint-20260818`，不得续接到新实验。
+
 ```bash
+cd ../优化方案对比（平面、纵断面联合协同优化）
+python run_joint.py --corridor 500 --pareto 21 --workers 12 --fresh
+python run_twostage.py --corridor 500 --joint-result results/joint_results_w500_dens.json --fresh
+python make_outputs.py
+cd ../confirmatory_current_v1_20260817
 python tests/test_protocol.py
+python tests/test_resume_guards.py
 python run_confirmatory.py --smoke --workers 2 --fresh
 python validate_results.py results/confirmatory_smoke.json
 python run_confirmatory.py --workers 12
@@ -48,6 +58,10 @@ python analyze_robustness.py
 python evaluate_operational_scenarios.py
 python make_manifest.py
 ```
+
+三个长跑脚本均使用原子检查点。首次正式运行使用 `--fresh`；中断后用完全相同但不带
+`--fresh` 的命令恢复。代码、数据、权重、尺度、上游结果或初始种群任一哈希变化时，
+恢复会失败关闭，绝不静默拼接旧记录。
 
 The long runner checkpoints every completed task in
 `results/confirmatory_raw.partial.json`. Re-running the same command resumes only when algorithms, run count, population size and budget match. Post-run diagnostic evaluations are explicitly outside the optimization NFE and are not exposed to the optimizers.
