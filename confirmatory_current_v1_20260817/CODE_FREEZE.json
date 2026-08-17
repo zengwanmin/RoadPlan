@@ -2,7 +2,7 @@
   "schema": "confirmatory-code-freeze-v2-preflight",
   "prepared_at": "2026-08-18T01:20:20+08:00",
   "model_logic_baseline": "ce69f0ed",
-  "repository_commit": null,
+  "repository_commit": "fcf820579e8611b1f32d856926ca9909a7bdd24c",
   "authoritative_result_sha256": null,
   "status": "awaiting fixed-endpoint W500 full run",
   "files": {
