@@ -1,262 +1,225 @@
-# RoadPlan — 高速公路立体线形优化（IJS + 熵权法）
+# RoadPlan：固定端点 W500 平纵联合优化实验
 
-基于改进水母搜索算法（Improved Jellyfish Search, IJS）与熵权法标量化的高速公路平纵断面立体线形优化实验平台。以广州北环高速实测数据为例，在**全生命周期成本**与**全生命周期能耗**双目标下，对平面与纵断面线形进行三维联合协同优化。
+本仓库用于广州北环高速平面—纵断面联合协同优化研究。当前论文主口径为：
 
-> 本仓库为某 SCI 期刊论文的实验代码与数据，实验设计源自林坤锐硕士学位论文《高速公路立体线形优化》。所有公式取自论文，所有数据取自 `数据/`，无标定、无杜撰。
+- 模型逻辑基线：`ce69f0e`；
+- 固定平面起终点与纵断面接线高程；
+- 平面谱宽 `W=500 m`；
+- 建筑密度 Tier-2 硬约束与 Tier-1 软代价开启；
+- DEM、OSM交叉桥、生态隧道和工程几何约束开启；
+- 275个上游槽位，读取274个基因，确认性实验使用273个独立自由度；
+- 成本与全生命周期交通能耗采用熵权决策；
+- 算法比较采用共享初始种群、严格相同 NFE 和配对统计。
 
----
+旧自由端点结果不得作为当前论文主证据。历史论文、表格、图件和108条探索性确认实验已保存在 Git 标签：
 
-## 目录
-
-- [研究背景](#研究背景)
-- [核心方法](#核心方法)
-- [实验构成](#实验构成)
-- [统一口径](#统一口径)
-- [环境搭建](#环境搭建)
-- [目录结构](#目录结构)
-- [快速开始](#快速开始)
-- [各实验运行](#各实验运行)
-- [输出产物](#输出产物)
-- [注意事项](#注意事项)
-- [复现性](#复现性)
-
----
-
-## 研究背景
-
-高速公路线形设计需在**建设经济性**与**运营能耗**之间权衡。传统方法多为平面、纵断面分阶段优化，难以获得全局最优的三维线形。本项目将平纵断面耦合为统一决策空间，用改进水母搜索算法在双目标下寻优，并通过熵权法客观赋权将双目标标量化为单目标，实现自动化的立体线形优化。
-
-研究段为广州北环高速，实测 GPS 轨迹 14018 点，本质为白云隧道段（K1+389–K10+631）+ K0+096 小桥。
-
----
-
-## 核心方法
-
-**改进水母搜索算法（IJS）** 在标准 JS 基础上引入三项改进：
-
-| 改进组件 | 作用 |
-|---|---|
-| Tent 混沌初始化 | 提升初始种群多样性与遍历性 |
-| Levy 飞行 | 增强全局探索、跳出局部最优 |
-| 差分进化（DE）算子 | 增强局部开发与收敛精度 |
-
-**熵权法标量化**：对成本 C 与能耗 E 归一化后，按熵权法客观权重合成单目标
-
-```
-F = w_C · C_norm + w_E · E_norm
+```text
+archive/pre-ce69-w500-fixed-endpoint-20260818
 ```
 
-**双目标定义**：
+## 当前状态
 
-- 全生命周期成本 `C = C_R(征地) + C_B(桥隧) + C_S(建设) + C_Q(养护) + C_TU(土方)`
-- 全生命周期能耗 `E = 单日车流能耗 × 365 × 30年5%等额年金现值`
+断点续跑、配置指纹和跨结果绑定代码已完成：
 
----
+- 代码提交：`fcf820579e8611b1f32d856926ca9909a7bdd24c`
+- 冻结记录提交：`d1f1110`
+- 正式固定端点 W500 结果：尚未启动生成
+- 旧 `joint_results_w500_dens.json`：自由端点历史数据，确认性脚本和图表脚本会拒绝使用
 
-## 实验构成
+核心目录：
 
-| 实验 | 文件夹 | 主脚本 | 作用 |
-|---|---|---|---|
-| ① 消融实验 | `消融实验/` | `run_ablation.py` | IJS 三改进组件（Tent/Levy/DE）消融，5 变体 × 30 次 |
-| ② 多算法对比 | `多算法对比/` | `run_comparison.py` | IJS vs JS/GA/PSO/GWO/NSGA-II，**6 规模** × 30 次 |
-| ③ 优化方案对比 | `优化方案对比（平面、纵断面联合协同优化）/` | `run_twostage.py`、`run_joint.py` | 平纵三维联合协同优化；两阶段法对照 |
-| ④ 敏感性分析 | `敏感性分析（平、纵联合，重优化）/` | `run_reopt.py` | 每采样点重新优化线形的参数敏感性分析 |
-
-多算法对比的 6 组问题规模由纵断面桩号步长控制决策维度：
-P1 (500 m, dim=45) / P2 (300 m, 75) / P3 (100 m, 225) / P4 (50 m, 450) /
-P5 (25 m, 899) / P6 (10 m, 2247)。
-
----
-
-## 统一口径
-
-四个实验已对齐同一数据源与参数口径，迁移后无需改动：
-
-- **数据源**：各实验 `data_loader.py` 均相对定位到 `实验/数据/数据.xlsx`（换设备/换绝对路径均不受影响）。
-- **桥隧**：桥梁 7.8 km、隧道 2.7 km；桥 886.69 万元/km、隧 27000 万元/km；基准里程 `L_ref = 22.342811 km`（取自 `数据/北环高速现状桥梁隧道统计.xlsx`）。优化后桥隧长度按平面里程缩短比例等比折减。
-- **能耗**：全生命周期货币量（亿元）＝单日能耗 × 365 × 30 年 5% 等额年金现值，**不乘任何标定系数**。
-- **单位**：成本、能耗均以**亿元**计。
-- **离散尺度（决策变量 vs 评价网格分开）**：实验③④的联合模型里，**决策变量**是平面 57 个控制点法向偏移 + 纵断面 57 个变坡点高程（均 400 m 一个，`STEP_CTRL_M`），联合决策维度 `dim=114`；**目标函数评价**仍在 2247 个 10 m 桩号（`STEP_EVAL_M`）上积分，土方/能耗/纵坡约束/边坡危险度精度不受影响，变坡点间线性插值为等坡段。
-  - 平面必须取 400 m：受平曲线最小半径 R ≥ 400 m（表3.2 极限值）约束，相邻控制点横向错动 A 与间距 Δs 的关系为 `R = (2Δs)²/(4π²A)`，Δs=10 m 时仅允许 A ≤ 2.5 cm（走廊带 ±800 m 内几乎全域不可行，实测中线自身 Rmin 也只有 53.5 m，实为拟合 GPS 噪声），Δs=400 m 时允许 A ≈ 40 m 且实测中线基线 Rmin=525.8 m 本身即合规。
-  - 纵断面决策变量也必须取 400 m（而非曾用过的 10 m）：57 维平面若与 2247 维纵断面放进同一决策向量，会被后者彻底淹没——IJS 按整体贪婪接受，"改善平面但恶化纵断面"的候选被拒绝，纵断面在贴地附近已近最优、任何扰动都变差，平面因而无法取得进展（实测：57+2247 时联合优化里程仅缩短 0.01%，δ≈0；调平到 57+57 后立刻 −2.6%，约束惩罚从 1.66e8 降到 2.16e4）。详见 `objective_joint.py` 模块说明与 `运行记录与问题定位.md` §3.3-3.4、§六。
-  - 地面高程近似（无面状 DEM）：按**里程比例**（`np.interp`）取实测中线同里程点的高程，而非"最近实测点"（`cKDTree` 最近邻）——后者在平面大幅侧移后会失效（侧移中位 570 m 时可能取到实测路线上相距数百米的点，产生虚假陡坡，实测达 104%）。详见同上文档 §3.2。
-- **养护费边坡项**：`objective.py` 的 CQ 边坡养护项按沿里程积分的面积口径计算（`Σ½(hᵢ+hᵢ₊₁)·ΔL × m × 0.5 元/m²`），与土方 C_TU 同为体积/面积量纲，**与桩号离散步长无关**；系数由原"逐桩号 50 元/桩"在 100 m 步长下等值折算而来。这保证实验②跨 P1–P6 六种步长的 C / F 数值处于同一基准、可横向比较。
-
----
-
-## 环境搭建
-
-需 Python 3.10+（开发环境 3.13）。在 `实验/` 目录下：
-
-```bash
-pip install -r requirements.txt
-```
-
-依赖：`numpy`、`scipy`、`pandas`、`matplotlib`、`openpyxl`（读 xlsx）、`python-docx`（可选，仅生成 docx 用）。
-
-> 可选：安装 `pandoc` —— 仅当需用 `build_docx.py` 将 md 分析文档转为带高亮的 docx 时。绘图与计算不依赖它。
-
----
-
-## 目录结构
-
-```
+```text
 实验/
-├── 数据/                          # 共享数据源(勿改名/移动)
-│   ├── 数据.xlsx                  # 北环高速 GPS 轨迹(14018 点)
-│   └── 北环高速现状桥梁隧道统计.xlsx
-├── requirements.txt
-├── README.md                      # 本文件
-├── 项目说明与迁移运行指南.md        # 迁移运行详解
-├── 消融实验/
-├── 多算法对比/
+├── 数据/
 ├── 优化方案对比（平面、纵断面联合协同优化）/
-└── 敏感性分析（平、纵联合，重优化）/
+│   ├── run_joint.py
+│   ├── run_twostage.py
+│   ├── make_outputs.py
+│   ├── results/
+│   ├── tables/
+│   └── figures/
+├── confirmatory_current_v1_20260817/
+│   ├── run_confirmatory.py
+│   ├── tests/
+│   ├── results/
+│   └── PROTOCOL.md
+└── draft/
 ```
 
-每个实验文件夹的通用结构：
+## 环境
 
-```
-<实验>/
-├── run_*.py          # 主运行脚本(生成 results/*.json)
-├── make_outputs.py   # 由 results 生成 figures/ 与 tables/
-├── params.py         # 参数(pop=200, iter=500, 桥隧/能耗口径)
-├── objective*.py     # 目标函数(成本 C / 能耗 E / 约束)
-├── algorithms.py     # IJS 及对比算法
-├── data_loader.py    # 读 数据/数据.xlsx
-├── results/          # 运行输出的 json
-├── figures/ tables/  # 图表输出
-└── README.md
-```
-
----
-
-## 快速开始
-
-迁移到新设备后，先用冒烟模式验证全管线无报错（`iter=5`、少量采样点/规模，每个 1–2 min）。**5 个入口脚本全部支持 `--smoke`**，冒烟结果写入 `results/*_smoke.json`，不会覆盖正式结果：
+建议使用 Python 3.13。主要依赖为 NumPy、SciPy、Pandas、Matplotlib、OpenPyXL、Rasterio、Shapely 和 PyProj。
 
 ```bash
-cd 消融实验/ && python3 run_ablation.py --smoke && cd ..
-cd 多算法对比/ && python3 run_comparison.py --smoke && cd ..
-cd 优化方案对比（平面、纵断面联合协同优化）/ && python3 run_twostage.py --smoke && python3 run_joint.py --smoke && cd ..
-cd 敏感性分析（平、纵联合，重优化）/ && python3 run_reopt.py --smoke && cd ..
+cd 实验
+python -m pip install -r requirements.txt
 ```
 
-确认无 `ImportError` / `FileNotFoundError` / 维度不匹配后，再进行正式全量运行。
+正式计算前建议关闭系统自动休眠，并保证模型与数据文件在运行期间不被修改。运行时配置指纹包含代码、数据、权重、尺度、初始种群、软件环境和上游结果哈希；任何变化都会使续跑失败关闭。
 
-> 冒烟模式下 `iter=5`，优化远未收敛，**输出的 C/E/里程会明显差于"不优化"的现状方案，且各权重点可能给出完全相同的解**（此时惩罚项量级远大于加权目标项，所有权重都退化为"最小化惩罚"）。这是预期现象，只用于验证管线连通，不可用于任何结论。
-
----
-
-## 各实验运行
-
-所有脚本在各自实验文件夹内运行（`cd` 进去即可），无需设环境变量。统一参数：`pop=200`、`iter=500`、`n_runs=30`（消融/多算法）。
-
-### 一键全量（推荐）
-
-`run_all_stages.sh` 按"总并发进程数 ≤ 可用核数"分三阶段编排全部四个实验，每阶段结束立即出图：
+## 预检
 
 ```bash
-cd 消融实验/ && setsid nohup python3 -u run_ablation.py > ablation.log 2>&1 < /dev/null & AB=$!
-cd ../多算法对比/ && setsid nohup python3 -u run_comparison.py > comparison.log 2>&1 < /dev/null & CP=$!
-cd .. && setsid nohup bash run_all_stages.sh $CP $AB > run_all_stages.log 2>&1 < /dev/null &
+cd confirmatory_current_v1_20260817
+python tests/test_protocol.py
+python tests/test_resume_guards.py
 ```
 
-分阶段的原因见下方「关于运行时间与并行度」。
+预期输出包括：
 
-### ① 消融实验（~1.2 h，单进程串行）
+```text
+PASS exact-NFE checks
+PASS quotient profile equivalence
+PASS current-model M-A equivalence and feasibility
+PASS repository baseline parity at complete-generation budgets
+PASS joint checkpoint fingerprint guard
+PASS confirmatory checkpoint fingerprint guard
+```
+
+## 正式运行顺序
+
+### 1. 固定端点 W500 联合主实验
 
 ```bash
-cd 消融实验/
-python3 run_ablation.py       # 5 变体 × 30 次, 纵断面 dim=225
-python3 make_outputs.py       # 生成图表
+cd "优化方案对比（平面、纵断面联合协同优化）"
+python run_joint.py --corridor 500 --pareto 21 --workers 12 --fresh
 ```
 
-### ② 多算法对比（~3 h 墙钟 / ~10 核·h，按规模 6 进程并行）
+首次运行使用 `--fresh`。中断后必须使用完全相同的命令，但去掉 `--fresh`：
 
 ```bash
-cd 多算法对比/
-python3 run_comparison.py           # 6 算法 × 6 规模 × 30 次 + Pareto 扫描
-python3 run_comparison.py --serial   # 强制单进程串行(~10 h, 供严格计时复核)
-python3 make_outputs.py
+python run_joint.py --corridor 500 --pareto 21 --workers 12
 ```
 
-### ③ 优化方案对比（实测 ~17.3 min 墙钟 / ~3.1 核·h）
+每个 M-B、M-C 和 Pareto 权重点完成后都会原子写入：
 
-**运行顺序重要**：`make_outputs.py` 的表 C3 需要两阶段与联合两者的结果。二者互不依赖，可并行启动。
+```text
+results/joint_results_w500_dens.partial.json
+```
+
+全部完成且最终方案可行后，才会原子覆盖：
+
+```text
+results/joint_results_w500_dens.json
+```
+
+随后自动删除冗余 partial 文件。
+
+### 2. 同口径两阶段对照
+
+两阶段对照必须绑定上一步联合结果的精确 SHA-256：
 
 ```bash
-cd 优化方案对比（平面、纵断面联合协同优化）/
-python3 run_twostage.py             # 两阶段: 平面单独 → 纵断面单独(严格串联, 单进程, 实测 8.9 min)
-python3 run_joint.py --workers 10   # 平纵联合(dim=114): M-B/M-C + Pareto 21 点并行, 实测 17.3 min
-python3 make_outputs.py
+python run_twostage.py \
+  --corridor 500 \
+  --joint-result results/joint_results_w500_dens.json \
+  --fresh
 ```
 
-> `--workers` 按可用核数的 ~70% 给（如 16 核配额给 10-11），给满核数反而因争用更慢，见下方「关于运行时间与并行度」。
+中断后去掉 `--fresh` 恢复。Stage 1和Stage 2分别保存检查点。若联合结果、代码、数据、权重或尺度变化，程序拒绝续接。
 
-### ④ 敏感性分析（实测 ~140 min / ~2.3 h 墙钟 / ~21 核·h，最慢）
+### 3. 重新生成 C2、C3和图件
 
 ```bash
-cd 敏感性分析（平、纵联合，重优化）/
-python3 run_reopt.py                # 226 个采样点各重跑一次完整联合优化(dim=114)
-python3 run_reopt.py --workers 9    # 显式指定并行度(默认 cpu_count-4, 建议按配额70%给)
-python3 make_outputs.py
+python make_outputs.py
 ```
 
----
+生成器会在写任何文件前检查：
 
-### 关于运行时间与并行度
+- 联合结果具有有效配置指纹；
+- 联合结果为正式 W500、密度开启口径；
+- 两阶段结果绑定同一联合结果哈希；
+- 两种 M-C 方案均满足惩罚和最小半径要求。
 
-**先确认真实可用核数。** `nproc` 报告的是宿主机核数，容器/cgroup 配额可能远小于它：
+检查失败时不会用旧 JSON 静默生成新表。输出来源记录在：
+
+```text
+tables/SOURCE_PROVENANCE.json
+```
+
+### 4. 确认性冒烟测试
 
 ```bash
-cat /sys/fs/cgroup/cpu.max                 # cgroup v2
-cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us    # cgroup v1, 除以 cfs_period_us(通常100000)
+cd ../confirmatory_current_v1_20260817
+python run_confirmatory.py --smoke --workers 2 --fresh
 ```
 
-本项目开发环境 `nproc=124` 但配额仅 **16 核**；超过配额开进程只会时间片切换、反而变慢。建议并发进程数按配额的 **~70%** 给（16 核 → ~11 进程），而非跑满。
+确认性脚本只有在新的正式 W500 联合结果存在、来源指纹有效且模型代码/数据与其一致时才允许启动。
 
-四实验总计约 **35 核·h**（① 1.2 + ② 10 + ③ 3.1 + ④ 21）；分三阶段（见下）实测总墙钟约 **5.6 h**。
-③④ 的核·h 相比早期版本（`dim=2304`、`cKDTree` 最近邻，约 177 核·h）下降约 7 倍，
-原因见下方「性能热点」与 `运行记录与问题定位.md` §四、§六。
+### 5. 12算法 × 20配对重复确认性实验
 
-**两个实验必须隔离串行运行**：消融（表A2）与多算法对比（表B1/B2）都把"平均运行时间(s)"作为**结果列**上报。因此
-- 消融固定单进程串行；
-- 多算法对比只按「规模」并行（6 进程），**规模内部的 6 个算法 × 30 次严格串行**，使同一张表里算法之间的耗时在同一条件下测得；
-- 这两个实验运行期间不应有其它实验抢占 CPU。
+```bash
+python run_confirmatory.py --workers 12 --fresh
+```
 
-**实验③④无耗时上报**，故可放开并行度。所有并行都**不改变数值结果**：每次运行的初始种群与随机种子均由 (规模, 算法, run 序号) 或 (采样点全局序号) 唯一确定，与执行顺序无关。
+中断后去掉 `--fresh`：
 
----
+```bash
+python run_confirmatory.py --workers 12
+```
 
-## 输出产物
+每完成一个“算法×重复”任务即写入原子检查点。全部240条完成后生成 `confirmatory_raw.json` 并移除 partial 文件。
 
-全部跑完后，各实验文件夹内：
+### 6. 验证、统计与制图
 
-- `figures/` —— 论文用图（png + pdf），坐标轴/图例为英文（SCI 需要）
-- `tables/` —— 数据表（csv + md），含中文列标题
-- `results/` —— 原始结果 json
-- `<实验>说明与分析总结.md/.docx` —— 分析文档
+```bash
+python validate_results.py
+python analyze_confirmatory.py
+python run_collaboration.py --workers 12
+python validate_collaboration.py
+python analyze_collaboration.py
+python run_robustness.py --workers 12
+python validate_robustness.py
+python analyze_robustness.py
+python evaluate_operational_scenarios.py
+python make_manifest.py
+```
 
----
+统计采用配对 Wilcoxon signed-rank、Holm多重校正、配对效应量和95%置信区间。
 
-## 注意事项
+## 断点续跑规则
 
-1. **数据文件不可改名/移动**：`数据/数据.xlsx`、`北环高速现状桥梁隧道统计.xlsx` 必须留在 `实验/数据/` 下。
-2. **`openpyxl` 必装**：`pandas.read_excel` 读 `.xlsx` 依赖它，缺失会在 `load_alignment()` 第一步就抛 `ImportError`。
-3. **内存不是瓶颈**：联合优化 `pop=200 × dim=114` 仅约 0.2 MB/种群，16 进程并行也远低于 1 GB；真正的约束是 CPU 时间。
-4. **跨平台**：敏感性分析用 `multiprocessing`，已兼容 macOS（`spawn`）与 Linux（`fork`），无需改动。
-5. **性能热点（已修复）**：联合模型单次目标函数求值约 **0.8 ms**。曾用 `cKDTree.query` 取"最近实测中线点"高程（占当时单次求值 7.6 ms 的 92%），但该近似在平面大幅侧移后会失效（侧移中位 570 m 时可能取到实测路线上相距数百米的点，产生虚假陡坡，实测达 104%），已改为按里程比例 `np.interp` 取值——不仅修正了失效场景，副产物是求值快约 11 倍。详见 `运行记录与问题定位.md` §3.2、§六。
-6. **模型的结构性特征（阅读结果时须知）**：设计高程定义为"地面高程 + 决策偏移"，故填挖高度 `dz` 与地面高程的绝对值无关——**全生命周期成本 C 完全不依赖地面高程**，地面高程仅通过 `diff(gz)`（地面纵坡）影响能耗 E 与纵坡约束。已用"地面整体抬高 100 m 后 C/E/惩罚变化恰为 0"验证。
+以下任一内容变化，程序都会拒绝读取旧检查点：
 
----
+- Git提交和核心代码哈希；
+- DEM、OSM、密度栅格和原始线路数据哈希；
+- W、密度开关、维数、种群规模、迭代数或 NFE；
+- `wC`、`wE`、`C_ref`、`E_ref`；
+- 上游联合结果 SHA-256；
+- 初始种群内容与随机种子；
+- Python、NumPy、SciPy和运行平台。
 
-## 复现性
+配置不一致时不得删除报错后强行拼接。确认旧证据已提交到 Git 后，才能使用 `--fresh` 建立全新实验。
 
-固定随机种子 `SEED_BASE = 20250722`，各实验结果可复现。详细迁移与运行说明见 [`项目说明与迁移运行指南.md`](项目说明与迁移运行指南.md)。
+## 结果与 Git 管理
 
----
+当前版本只保留最新权威结果；历史结果通过提交和标签恢复，不在当前目录复制多套同名数据。
 
-## 许可
+查看历史快照：
 
-本仓库为学术研究用途，数据与方法引用请注明来源。
+```bash
+git show archive/pre-ce69-w500-fixed-endpoint-20260818
+```
+
+读取历史文件：
+
+```bash
+git show "archive/pre-ce69-w500-fixed-endpoint-20260818:优化方案对比（平面、纵断面联合协同优化）/tables/表C2_优化前后关键指标对比表.csv"
+```
+
+正式实验全部完成后，应执行一次结果清理提交：
+
+1. 新 JSON、C2/C3、图件和统计结果覆盖旧文件；
+2. 从当前版本删除旧 draft 和探索性输出；
+3. 生成并核对结果 manifest；
+4. 保证 `git status` 干净；
+5. 提交当前统一口径结果。
+
+## 重要解释边界
+
+- 不根据降低率大小选择历史版本；
+- 不把自由端点结果解释为固定端点结果；
+- 不把不同 W、不同密度口径或不同 NFE 的结果直接比较；
+- 冒烟结果只验证管线，不用于论文结论；
+- 单次最优解不能代替多随机种子统计；
+- 当前论文结论必须由同一模型、数据、预算和来源指纹下的主实验、对照、消融与稳健性结果共同支持。
