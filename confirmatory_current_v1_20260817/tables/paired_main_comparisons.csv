@@ -1,0 +1,6 @@
+﻿primary,comparator,metric,direction,n_pairs,median_diff,ci_low,ci_high,p_raw,rank_biserial,p_holm
+V5_IJS,V1_JS,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
+V5_IJS,GA,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
+V5_IJS,PSO,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
+V5_IJS,GWO,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
+V5_IJS,NSGA-II,F_hard,comparator_minus_IJS_positive_favors_IJS,1,-0.0009814628989529561,nan,nan,nan,nan,0.0

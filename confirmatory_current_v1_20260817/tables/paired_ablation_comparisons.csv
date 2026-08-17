@@ -1,0 +1,8 @@
+﻿primary,comparator,metric,direction,n_pairs,median_diff,ci_low,ci_high,p_raw,rank_biserial,p_holm
+V5_IJS,V1_JS,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
+V5_IJS,V2_JS+Tent,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
+V5_IJS,V3_JS+Levy,F_hard,comparator_minus_IJS_positive_favors_IJS,1,-0.002067620079898802,nan,nan,nan,nan,0.0
+V5_IJS,V4_JS+DE,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
+V5_IJS,V6_JS+Tent+Levy,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
+V5_IJS,V7_JS+Tent+DE,F_hard,comparator_minus_IJS_positive_favors_IJS,1,-2.220446049250313e-16,nan,nan,nan,nan,0.0
+V5_IJS,V8_JS+Levy+DE,F_hard,comparator_minus_IJS_positive_favors_IJS,1,-0.002067620079898802,nan,nan,nan,nan,0.0

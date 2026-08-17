@@ -1,0 +1,17 @@
+{
+  "schema": "confirmatory-code-freeze-v1",
+  "frozen_at": "2026-08-17T05:04:08+08:00",
+  "repository_commit": "ce69f0ed",
+  "authoritative_result_sha256": "e7c652922252f97f906c55cef550b9181a360d5bd6fbdf073db42ed97c22291d",
+  "files": {
+    "model_adapter.py": "2cb168a13d1a6cfcbf72d9122579c726db7ec2db2f1e3afe0479094bd6fe0126",
+    "algorithms_nfe.py": "c364bc0456929491b5da9d279c8b85e0e33272e50c0dd9ac17963a45fb5a8e0b",
+    "run_confirmatory.py": "4f231b4fb7c0f6f7af1e10bee5f23b4c0bbb49414ff2b9de2f56f060e55a1f55",
+    "PROTOCOL.md": "c0f83a730851e92ff091b803f9ba37f753b783dfcd8a12d5ae44d24c9ef0e8f0",
+    "../优化方案对比（平面、纵断面联合协同优化）/objective_joint.py": "d2540ac5edcb828b4f004b51c92a35e8e203c7ffdcb6aa2ad50d376129aa43ae",
+    "../优化方案对比（平面、纵断面联合协同优化）/objective.py": "5f491cc490842e3cb4a99a51d19061c141f456b0d39d868d28d0f91baa6838b6",
+    "../优化方案对比（平面、纵断面联合协同优化）/params.py": "f6eb7854659f928ba6f06b0a3cf2258707081d5468722844d9d1b92bb547c3f1",
+    "../多算法对比/benchmarks.py": "2202fd46e60279dc8eea2c977352b267e4c068ac7f38db04225619f15bf3465e"
+  },
+  "note": "Core runtime files must remain unchanged until confirmatory_raw.json is complete. Analysis and robustness scripts are outside the active main optimizer process."
+}

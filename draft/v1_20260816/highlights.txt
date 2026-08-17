@@ -1,0 +1,5 @@
+DEM and OSM make structures and urban density geometry-dependent.
+A 275-D IJS model co-optimizes horizontal and vertical highway alignments.
+The current scheme cuts life-cycle cost 8.33% and traffic energy 3.00%.
+IJS improves the 30-run mean objective by 25.45% over baseline JS.
+All 237 re-optimized sensitivity scenarios remain feasible.

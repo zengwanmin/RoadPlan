@@ -1,0 +1,5 @@
+DEM and OSM make structures and urban density geometry-dependent.
+Horizontal modes and anchored grades define one coupled 3D alignment.
+The current scheme cuts life-cycle cost 8.33% and traffic energy 3.00%.
+The selected line is slightly longer but avoids all Tier-2 urban cores.
+Historical tests are separated from current-model confirmatory evidence.

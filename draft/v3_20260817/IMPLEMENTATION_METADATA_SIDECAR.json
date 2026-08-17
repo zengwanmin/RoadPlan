@@ -1,0 +1,30 @@
+{
+  "schema": "roadplan-v3-interpretation-sidecar-1",
+  "authoritative_result": "优化方案对比（平面、纵断面联合协同优化）/results/joint_results_w500_dens.json",
+  "authoritative_result_sha256": "e7c652922252f97f906c55cef550b9181a360d5bd6fbdf073db42ed97c22291d",
+  "immutable_source_metadata_errata": {
+    "meta.note": {
+      "stale_text_fragments": [
+        "立交7.8km常数计费",
+        "走廊带±500m"
+      ],
+      "current_interpretation": [
+        "Mainline crossing bridges are triggered endogenously by candidate intersections with qualifying OSM roads, railways and watercourses; only calibrated ramp-function cost remains invariant.",
+        "W=500 m is the first sine-mode coefficient bound with |a_k|<=W/k^2, not a pointwise hard corridor half-width."
+      ],
+      "reason_source_was_not_edited": "The saved result JSON is treated as immutable experimental evidence; this sidecar corrects descriptive metadata without changing numerical results."
+    }
+  },
+  "parameter_documentation_errata": {
+    "params.ALGO.mu_tent": {
+      "stale_documentation_value": 2.0,
+      "implemented_and_manuscript_value": 1.99,
+      "implementation_source": "优化方案对比（平面、纵断面联合协同优化）/algorithms.py"
+    }
+  },
+  "decision_space": {
+    "stored_slots": 275,
+    "referenced_genes": 274,
+    "maximum_locally_independent_degrees_of_freedom": 273
+  }
+}

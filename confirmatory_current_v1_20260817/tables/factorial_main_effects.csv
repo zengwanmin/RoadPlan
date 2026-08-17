@@ -1,0 +1,4 @@
+﻿component,direction,n_pairs,median_diff,ci_low,ci_high,p_raw,rank_biserial,p_holm
+Tent,mean_off_minus_mean_on_positive_is_improvement,1,-0.001033810039949401,nan,nan,nan,nan,0.0
+Levy,mean_off_minus_mean_on_positive_is_improvement,1,0.00103381003994929,nan,nan,nan,nan,0.0
+DE,mean_off_minus_mean_on_positive_is_improvement,1,0.0,nan,nan,nan,nan,0.0
