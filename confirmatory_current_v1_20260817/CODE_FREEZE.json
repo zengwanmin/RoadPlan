@@ -3,8 +3,8 @@
   "prepared_at": "2026-08-18T01:20:20+08:00",
   "model_logic_baseline": "ce69f0ed",
   "repository_commit": "fcf820579e8611b1f32d856926ca9909a7bdd24c",
-  "authoritative_result_sha256": null,
-  "status": "awaiting fixed-endpoint W500 full run",
+  "authoritative_result_sha256": "4c16cdec02a902509996122b7fed67e4e3887f5a938968a5a9a41f5fa8b2abce",
+  "status": "finalized after fixed-endpoint W500 full run (2026-08-17, joint 85.4 min + two-stage 51.7 min, all points feasible)",
   "files": {
     "model_adapter.py": "2cb168a13d1a6cfcbf72d9122579c726db7ec2db2f1e3afe0479094bd6fe0126",
     "algorithms_nfe.py": "c364bc0456929491b5da9d279c8b85e0e33272e50c0dd9ac17963a45fb5a8e0b",

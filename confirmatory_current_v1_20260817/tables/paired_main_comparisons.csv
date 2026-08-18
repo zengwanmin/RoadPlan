@@ -1,6 +1,6 @@
-﻿primary,comparator,metric,direction,n_pairs,median_diff,ci_low,ci_high,p_raw,rank_biserial,p_holm
-V5_IJS,V1_JS,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
-V5_IJS,GA,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
-V5_IJS,PSO,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
-V5_IJS,GWO,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
-V5_IJS,NSGA-II,F_hard,comparator_minus_IJS_positive_favors_IJS,1,-0.0009814628989529561,nan,nan,nan,nan,0.0
+﻿primary,comparator,metric,direction,IJS_feasible_comparator_not,comparator_feasible_IJS_not,feasibility_exact_p_raw,n_pairs,median_diff,ci_low,ci_high,p_raw,rank_biserial,p_holm,feasibility_exact_p_holm
+V5_IJS,V1_JS,F_hard,comparator_minus_IJS_positive_favors_IJS,0,0,1.0,20,-0.0002634911052082911,-0.00032354069089618465,0.0002630942069403175,0.6215133666992188,-0.13333333333333333,0.6215133666992188,1.0
+V5_IJS,GA,F_hard,comparator_minus_IJS_positive_favors_IJS,0,0,1.0,20,0.026336112954646107,0.026185039950440248,0.026628472377517254,1.9073486328125e-06,1.0,9.5367431640625e-06,1.0
+V5_IJS,PSO,F_hard,comparator_minus_IJS_positive_favors_IJS,0,0,1.0,20,0.013765091471946711,0.012226327020517846,0.015131453398158967,1.9073486328125e-06,1.0,9.5367431640625e-06,1.0
+V5_IJS,GWO,F_hard,comparator_minus_IJS_positive_favors_IJS,0,0,1.0,20,0.004133139826232535,0.0035968564416568594,0.005246055511117065,3.62396240234375e-05,0.9333333333333333,0.0001087188720703125,1.0
+V5_IJS,NSGA-II,F_hard,comparator_minus_IJS_positive_favors_IJS,0,0,1.0,20,0.0004564904112614454,0.00020384444773968724,0.0008585282827226481,0.012079238891601562,0.6285714285714286,0.024158477783203125,1.0

@@ -1,8 +1,8 @@
-﻿primary,comparator,metric,direction,n_pairs,median_diff,ci_low,ci_high,p_raw,rank_biserial,p_holm
-V5_IJS,V1_JS,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
-V5_IJS,V2_JS+Tent,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
-V5_IJS,V3_JS+Levy,F_hard,comparator_minus_IJS_positive_favors_IJS,1,-0.002067620079898802,nan,nan,nan,nan,0.0
-V5_IJS,V4_JS+DE,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
-V5_IJS,V6_JS+Tent+Levy,F_hard,comparator_minus_IJS_positive_favors_IJS,1,0.0,nan,nan,nan,nan,0.0
-V5_IJS,V7_JS+Tent+DE,F_hard,comparator_minus_IJS_positive_favors_IJS,1,-2.220446049250313e-16,nan,nan,nan,nan,0.0
-V5_IJS,V8_JS+Levy+DE,F_hard,comparator_minus_IJS_positive_favors_IJS,1,-0.002067620079898802,nan,nan,nan,nan,0.0
+﻿primary,comparator,metric,direction,IJS_feasible_comparator_not,comparator_feasible_IJS_not,feasibility_exact_p_raw,n_pairs,median_diff,ci_low,ci_high,p_raw,rank_biserial,p_holm,feasibility_exact_p_holm
+V5_IJS,V1_JS,F_hard,comparator_minus_IJS_positive_favors_IJS,0,0,1.0,20,-0.0002634911052082911,-0.00032354069089618465,0.0002630942069403175,0.6215133666992188,-0.13333333333333333,1.0,1.0
+V5_IJS,V2_JS+Tent,F_hard,comparator_minus_IJS_positive_favors_IJS,0,0,1.0,20,0.00024406882342348224,-0.0003094359849974415,0.0007697091338172979,0.2773551940917969,0.2857142857142857,0.8320655822753906,1.0
+V5_IJS,V3_JS+Levy,F_hard,comparator_minus_IJS_positive_favors_IJS,0,0,1.0,20,0.00039209197040973587,2.1681990679145446e-05,0.0005331737565510419,0.029575347900390625,0.5523809523809524,0.1183013916015625,1.0
+V5_IJS,V4_JS+DE,F_hard,comparator_minus_IJS_positive_favors_IJS,0,0,1.0,20,-0.0005904259434587056,-0.0008939646484303898,-0.00040657018654788324,1.9073486328125e-06,-1.0,1.33514404296875e-05,1.0
+V5_IJS,V6_JS+Tent+Levy,F_hard,comparator_minus_IJS_positive_favors_IJS,0,0,1.0,20,0.0003266253391068785,3.322249729026394e-05,0.0005676928685448002,0.013616561889648438,0.6190476190476191,0.06808280944824219,1.0
+V5_IJS,V7_JS+Tent+DE,F_hard,comparator_minus_IJS_positive_favors_IJS,0,0,1.0,20,-0.0008937419540863689,-0.001229944119819637,-0.000660843154841384,9.5367431640625e-06,-0.9714285714285714,5.7220458984375e-05,1.0
+V5_IJS,V8_JS+Levy+DE,F_hard,comparator_minus_IJS_positive_favors_IJS,0,0,1.0,20,0.00025914618987121774,-0.00024388741099101718,0.0004133405246486421,0.6215133666992188,0.13333333333333333,1.0,1.0

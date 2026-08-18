@@ -1,7 +1,7 @@
 {
-  "path": "/Users/cengwanmin/Desktop/工作文件夹/1_研究生课题组工作/1_论文/2、小论文/实验/confirmatory_current_v1_20260817/results/confirmatory_raw.partial.json",
+  "path": "/root/roadplan/RoadPlan_remote/confirmatory_current_v1_20260817/results/confirmatory_raw.json",
   "expected_records": 240,
-  "audited_records": 96,
+  "audited_records": 240,
   "passed": true,
   "errors": []
 }

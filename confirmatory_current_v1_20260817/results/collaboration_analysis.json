@@ -1,0 +1,46 @@
+{
+  "schema": "collaboration-analysis-v1",
+  "rows": [
+    {
+      "mode": "plan_only",
+      "direction": "restricted_minus_joint; positive_favors_joint",
+      "n": 10,
+      "median_diff": 0.003124634432113027,
+      "ci_low": 0.0018073277729357407,
+      "ci_high": 0.003515494569399258,
+      "p_raw": 0.001953125,
+      "rank_biserial": 1.0,
+      "feasible_rate": 1.0,
+      "F_median": 0.8917970595797053,
+      "p_holm": 0.005859375
+    },
+    {
+      "mode": "profile_only",
+      "direction": "restricted_minus_joint; positive_favors_joint",
+      "n": 10,
+      "median_diff": 0.022041423763453916,
+      "ci_low": 0.021790877093399885,
+      "ci_high": 0.022347465507690456,
+      "p_raw": 0.001953125,
+      "rank_biserial": 1.0,
+      "feasible_rate": 1.0,
+      "F_median": 0.91072437073122,
+      "p_holm": 0.005859375
+    },
+    {
+      "mode": "sequential",
+      "direction": "restricted_minus_joint; positive_favors_joint",
+      "n": 10,
+      "median_diff": -0.003203271185980683,
+      "ci_low": -0.005621124402091948,
+      "ci_high": -0.002837523241071782,
+      "p_raw": 0.001953125,
+      "rank_biserial": -1.0,
+      "feasible_rate": 1.0,
+      "F_median": 0.8856108415768345,
+      "p_holm": 0.005859375
+    }
+  ],
+  "multiplicity": "Holm across three pre-specified comparisons",
+  "bootstrap": "20,000 paired resamples, seed 20260820"
+}

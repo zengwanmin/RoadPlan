@@ -1,4 +1,4 @@
 ﻿component,direction,n_pairs,median_diff,ci_low,ci_high,p_raw,rank_biserial,p_holm
-Tent,mean_off_minus_mean_on_positive_is_improvement,1,-0.001033810039949401,nan,nan,nan,nan,0.0
-Levy,mean_off_minus_mean_on_positive_is_improvement,1,0.00103381003994929,nan,nan,nan,nan,0.0
-DE,mean_off_minus_mean_on_positive_is_improvement,1,0.0,nan,nan,nan,nan,0.0
+Tent,mean_off_minus_mean_on_positive_is_improvement,20,-6.221519972704481e-06,-0.0002575419837926307,0.0001299445513602837,0.5958194732666016,-0.14285714285714285,0.5958194732666016
+Levy,mean_off_minus_mean_on_positive_is_improvement,20,-0.0005823292988025863,-0.0007688353229995393,-0.0003372510670895945,0.10539817810058594,-0.41904761904761906,0.21079635620117188
+DE,mean_off_minus_mean_on_positive_is_improvement,20,0.0006302765990408576,0.00041669080073891696,0.0008554064869497058,1.9073486328125e-06,1.0,5.7220458984375e-06
