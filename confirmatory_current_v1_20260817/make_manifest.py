@@ -28,7 +28,7 @@ FILES = [
     SCHEME / "algorithms.py", SCHEME / "run_joint.py", SCHEME / "crossings.py",
     SCHEME / "dem.py", SCHEME / "building_mask.py", SCHEME / "data_loader.py",
     SCHEME / "results" / "joint_results_w500_dens.json",
-    ROOT / "数据" / "data.xlsx",
+    ROOT / "数据" / "数据.xlsx",
     ROOT / "数据" / "OSM走廊带障碍物" / "obstacles.npz",
     ROOT / "数据" / "OSM走廊带障碍物" / "density_tiers_V1.npz",
 ]
