@@ -56,6 +56,7 @@ from objective import (earthwork_cost, lcc_ping, fuel_energy, ev_energy,
                        entropy_weights, _grades)
 from data_loader import load_alignment
 import dem
+from acceleration import ScalarObjective, evaluate_many_ordered
 
 CORRIDOR_HALF_W = 500.0     # 走廊带半宽(m): 主实验口径 ±500m(±250m 作敏感性情景)
 STEP_PLANE_CTRL_M = 150.0   # 平面决策变量间距(m): 受R≥400m约束, ≥150m贴地才可行
@@ -151,6 +152,8 @@ def _ic_bands_from_osm(X, Y, s, t_meas):
 def make_plane_context(align):
     """由实测线位预计算: 平面控制点、单位左法向、实测里程剖面、高程可调幅度、
     起终点弦与立交带弦投影区间(空间锚定)。"""
+    # DEM/OSM 在算法计时开始前一次加载，后续所有算法共享相同只读数据。
+    dem.preload_readonly()
     X, Y = align["X"], align["Y"]
     z = align["ground_z"].copy()
     s = np.concatenate([[0], np.cumsum(np.hypot(np.diff(X), np.diff(Y)))])
@@ -188,6 +191,7 @@ def make_plane_context(align):
     # ---- 交叉桥内生口径(问题21)的现状线校准: 匝道功能费常数 + 基线诊断 ----
     import crossings as _cr
     lat0 = float(align["lat"][0]); lon0 = float(align["lon"][0])
+    _cr.preload_readonly(lat0, lon0)
     cr0 = _cr.detect_crossings(X, Y, lat0, lon0)
     eco_at = np.interp(cr0["s"], s, eco_line.astype(float)) > 0.5
     iv0, L0m = _cr.bridge_intervals(cr0, keep=~eco_at)
@@ -226,6 +230,11 @@ def _mode_amps():
 
 
 MODE_AMPS = _mode_amps()
+MODE_AMPS.setflags(write=False)
+_MODE_U = np.linspace(0.0, 1.0, N_CTRL)
+_MODE_K = np.arange(1, N_MODE + 1, dtype=np.float64)
+_MODE_BASIS = np.sin(np.outer(_MODE_U, _MODE_K) * np.pi)
+_MODE_BASIS.setflags(write=False)
 
 
 def set_corridor(half_w_m):
@@ -240,6 +249,7 @@ def set_corridor(half_w_m):
     CORRIDOR_HALF_W = float(half_w_m)
     PLANE_MODE_A1 = CORRIDOR_HALF_W
     MODE_AMPS = _mode_amps()
+    MODE_AMPS.setflags(write=False)
 
 
 def set_profile_step(step_m):
@@ -260,10 +270,8 @@ def set_profile_step(step_m):
 def delta_from_modes(coef_norm):
     """由归一化模态系数 [0,1]^N_MODE 生成平面控制点法向偏移 δ(长度 N_CTRL)。"""
     a = (np.asarray(coef_norm, float) - 0.5) * 2.0 * MODE_AMPS
-    u = np.linspace(0.0, 1.0, N_CTRL)
-    k = np.arange(1, N_MODE + 1, dtype=float)
     # δ(u) = Σ a_k sin(kπu); 正弦基在 u=0,1 处为零 -> 端点自动固定
-    return (np.sin(np.outer(u, k) * np.pi) * a).sum(axis=1)
+    return (_MODE_BASIS * a).sum(axis=1)
 
 
 def profile_from_grades(prof_norm, gz_ctrl, ds_ctrl, grade_max):
@@ -389,7 +397,26 @@ def decode_joint(x, pc):
                 bridge=bridge, L_cross_km=L_cross_m / 1000.0)
 
 
-def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
+def _joint_penalty(d, pen_scale):
+    """只依赖已解码几何的非负罚项，是完整标量目标的安全下界。"""
+    Rmin_req = FLAT_STD_100["R_extreme_m"]
+    rel_R = np.maximum(0.0, (Rmin_req - d["R"]) / Rmin_req)
+    grades = _grades(d["sta"], d["design_z"])
+    dg_lim = 3e-4 * STEP_PROFILE_CTRL_M
+    rel_V = np.maximum(0.0, (np.abs(np.diff(grades)) - dg_lim) / dg_lim)
+    pen = pen_scale * 10.0 * (rel_R.mean() + rel_R.max()
+                              + rel_V.mean() + rel_V.max())
+    cr = d["cross"]; kp = d["cross_keep"]
+    if len(cr["s"]) and np.any(kp):
+        th_min = np.radians(
+            BRIDGE_TUNNEL["crossing_trigger"]["skew_min_deg"])
+        rel_S = np.maximum(0.0, (th_min - cr["theta"][kp]) / th_min)
+        pen += pen_scale * 10.0 * (rel_S.mean() + rel_S.max())
+    return float(pen)
+
+
+def objectives_joint(x, pc, pen_scale=1.0, scenario=None,
+                     reject_penalty=None):
     """联合目标: 返回 (C, E, penalty, info)。C/E 用【新里程、新桩号】计算。
 
     pen_scale: 惩罚权重倍率, 供分阶段收紧使用(先软后硬)。
@@ -411,6 +438,9 @@ def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
     esave = float(P.get("elec_save", 0.0))
 
     d = decode_joint(x, pc)
+    pen = _joint_penalty(d, pen_scale)
+    if reject_penalty is not None and pen >= float(reject_penalty):
+        return np.nan, np.nan, pen, {"early_reject": True}
     sta, gz_new, design_z, L_new = d["sta"], d["gz_new"], d["design_z"], d["L_new"]
     v = CASE["design_speed_kmh"]
 
@@ -456,39 +486,8 @@ def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
             * (1 + epg) ** j * disc * 365.0
     E = E_fuel + E_ele                                                       # 全周期 元
 
-    # ---- 联合约束惩罚 ----
-    # 尺度: 用【相对违反量的 均值+最大值】×权重, 使惩罚与标量目标 F(约 0.19)可比。
-    # 只取均值会严重低估局部违反(2247 个评价点里少数越限时均值被摊薄, 实测 Rmin=1 m
-    # 的个体惩罚仅 0.2), 故叠加最大值项, 使任何单点的严重越限都产生量级为 1 的惩罚。
-    # 原实现用绝对系数(5e7/1e9/5e8)再除以 C_ref, 实测 pen/C_ref≈3.2 而 F≈0.19,
-    # 搜索几乎只看得见惩罚、看不见成本与能耗。
-    # 纵坡约束(式4.27)已由纵坡编码构造满足, 不再设惩罚项。
-    Rmin_req = FLAT_STD_100["R_extreme_m"]
     R = d["R"]
-    rel_R = np.maximum(0.0, (Rmin_req - R) / Rmin_req)             # 平曲线半径(表3.2)
-    grades = _grades(sta, design_z)
-    # 坡差限值按变坡点步长归一(3e-4/m, 与 objective.py 同口径): 100m 步长时为
-    # 0.03(原值不变), 供 PJ1-PJ6 联合规模阶梯在不同步长下保持同一物理约束。
-    dg_lim = 3e-4 * STEP_PROFILE_CTRL_M
-    rel_V = np.maximum(0.0, (np.abs(np.diff(grades)) - dg_lim) / dg_lim)
-    pen = pen_scale * 10.0 * (rel_R.mean() + rel_R.max()
-                              + rel_V.mean() + rel_V.max())        # 竖曲线(式4.28-4.29)
-
-    # ---- 交叉桥斜交角约束(问题21) ----
-    # 【净空罚项的校核否决(2026-08-12)】原方案含净空罚(设计线高出障碍物地面
-    # H_clear), 但 z14 DEM(~9m/px)不含被交道路的结构高程(高架/下穿均不可见),
-    # 现状线校核 Δz 分布横跨 ±7m(被交道路既有上跨我方也有下穿), 任何净空阈值都
-    # 使现状方案天生不可行 -> 不可标定, 予以移除。竖向分离的工程成本已由触发桥
-    # 结构造价(1.56亿/km, 官方指引含典型跨线桥)承担; 待获得被交道路设计高程数据
-    # 后可恢复该约束(留作展望)。
-    cr = d["cross"]; kp = d["cross_keep"]
-    if len(cr["s"]) and np.any(kp):
-        # 斜交角: θ < skew_min_deg 设罚(跨铁路/河规范斜交限制; 现状最小 15.6°)
-        th_min = np.radians(
-            BRIDGE_TUNNEL["crossing_trigger"]["skew_min_deg"])
-        rel_S = np.maximum(0.0, (th_min - cr["theta"][kp]) / th_min)
-        pen += pen_scale * 10.0 * (rel_S.mean() + rel_S.max())
-
+    cr = d["cross"]
     ic_seg = 0.5 * (d["ic"][:-1].astype(float) + d["ic"][1:].astype(float))
     L_ic_km = float(np.sum(ic_seg * np.diff(sta))) / 1000.0
     info = dict(C_PING=C_PING, C_TU=C_TU, E_fuel=E_fuel, E_ele=E_ele,
@@ -510,7 +509,16 @@ def make_scalar_joint(pc, wC, wE, C_ref, E_ref, pen_scale=1.0, scenario=None):
         C, E, pen, _ = objectives_joint(x, pc, pen_scale=pen_scale,
                                         scenario=scenario)
         return wC * (C / C_ref) + wE * (E / E_ref) + pen
-    return f
+
+    def bounded(x, limit):
+        C, E, pen, info = objectives_joint(
+            x, pc, pen_scale=pen_scale, scenario=scenario,
+            reject_penalty=limit)
+        if info.get("early_reject", False):
+            return limit
+        return wC * (C / C_ref) + wE * (E / E_ref) + pen
+
+    return ScalarObjective(f, bounded)
 
 
 def run_ijs_two_phase(make_f, lb, ub, pop0, max_iter, seed,
@@ -554,8 +562,11 @@ def joint_baseline(pc, pop_size, seed=2025, x_seed=None):
     base = rng.random((pop_size, DIM))
     if x_seed is not None:
         base[0] = np.clip(np.asarray(x_seed, float), 0.0, 1.0)
-    C0 = np.array([objectives_joint(base[i], pc)[0] for i in range(pop_size)])
-    E0 = np.array([objectives_joint(base[i], pc)[1] for i in range(pop_size)])
+    def ce(x):
+        return np.asarray(objectives_joint(x, pc)[:2], dtype=np.float64)
+
+    CE0 = evaluate_many_ordered(ce, base)
+    C0, E0 = CE0[:, 0], CE0[:, 1]
     wC, wE = entropy_weights(C0, E0)
     return base, float(wC), float(wE), float(C0.mean()), float(E0.mean())
 
@@ -611,8 +622,12 @@ def make_scalar_plane(pc, C_ref_plane, pen_scale=1.0):
     import crossings as _cr
     Rmin_req = FLAT_STD_100["R_extreme_m"]
 
-    def f(coef_norm):
+    def value(coef_norm, limit=None):
         xx, yy, L_new, R = build_plane_from_delta(pc, coef_norm)
+        vio_R = np.maximum(0.0, (Rmin_req - R) / Rmin_req).mean()
+        pen = pen_scale * 10.0 * vio_R
+        if limit is not None and pen >= limit:
+            return limit
         # 生态区穿越长度(沿密集平面点)
         eco = dem.eco_mask_xy(xx, yy, pc["lat0"], pc["lon0"])
         seg = np.hypot(np.diff(xx), np.diff(yy))
@@ -624,8 +639,10 @@ def make_scalar_plane(pc, C_ref_plane, pen_scale=1.0):
         keep = np.interp(cross["s"], sarc, eco.astype(float)) <= 0.5 \
             if len(cross["s"]) else np.zeros(0, dtype=bool)
         _, L_cross_m = _cr.bridge_intervals(cross, keep=keep)
-        vio_R = np.maximum(0.0, (Rmin_req - R) / Rmin_req).mean()
         return plane_lcc(L_new, L_eco_km, L_cross_km=L_cross_m / 1000.0,
                          ramp_cost=pc["ramp_cost"]) / C_ref_plane \
-            + pen_scale * 10.0 * vio_R
-    return f
+            + pen
+
+    return ScalarObjective(
+        lambda x: value(x),
+        lambda x, limit: value(x, limit))

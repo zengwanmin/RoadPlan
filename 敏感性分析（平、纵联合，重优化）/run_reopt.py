@@ -30,6 +30,7 @@ from algorithms import run, VARIANTS
 from objective import entropy_weights
 from objective_joint import make_plane_context, DIM, N_MODE, M_PROF
 from objective_reopt import objectives_reopt, make_scalar_reopt
+from acceleration import evaluate_many_ordered, evaluation_workers
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.path.join(HERE, "results"); os.makedirs(RESULTS, exist_ok=True)
@@ -91,10 +92,11 @@ def _optimize_one(task):
     pc = _PC
     base = _base_pop(seed)
     # 用该点参数化目标在初始种群上算 (C,E) -> 熵权法客观权重(式5.3-5.4)
-    C0 = np.empty(POP_SIZE); E0 = np.empty(POP_SIZE)
-    for i in range(POP_SIZE):
-        c, e, _, _ = objectives_reopt(base[i], pc, P)
-        C0[i] = c; E0[i] = e
+    def ce(x):
+        return np.asarray(objectives_reopt(x, pc, P)[:2], dtype=np.float64)
+
+    CE0 = evaluate_many_ordered(ce, base)
+    C0, E0 = CE0[:, 0], CE0[:, 1]
     if task["kind"] == "front":
         wC = task["w1"]; wE = 1.0 - task["w1"]
     else:
@@ -251,6 +253,7 @@ def main():
     out = _assemble(recs, tasks, grids, align)
     out["meta"]["smoke"] = bool(args.smoke)
     out["meta"]["n_workers"] = N_WORKERS
+    out["meta"]["evaluation_workers_per_process"] = evaluation_workers()
     out["meta"]["wall_time_min"] = round((time.time() - t_all) / 60.0, 2)
     fn = os.path.join(RESULTS,
                       "reopt_results_smoke.json" if args.smoke

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-draw_density_check.py — 密度分区约束的核验图: 最终线位 + Tier1/Tier2 分区叠加
+draw_density_check.py — 图C10建筑密度分布叠加: 最终线位 + Tier1/Tier2分区
 
-用途: 目视确认 (a) 分区栅格与线位落在同一坐标系, (b) 线位未穿越 Tier2 禁行区。
-配合 run_joint.py 输出的 L_dense2_km 断言使用(数值为 0 且图上不相交才算通过)。
+建筑密度不进入最终主实验的目标或约束。本图只把建筑分布作为地理背景叠加，
+用于增强方案可视化和观察线位与建成区的空间关系，不作可行性判定。
 """
 import json
 import os
@@ -23,7 +23,7 @@ import building_mask as bm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.path.join(HERE, 'results',
-                   sys.argv[1] if len(sys.argv) > 1 else 'joint_results.json')
+                   sys.argv[1] if len(sys.argv) > 1 else 'joint_results_w500_nodens.json')
 FIG = os.path.join(HERE, 'figures')
 os.makedirs(FIG, exist_ok=True)
 
@@ -35,9 +35,33 @@ NX, NY = t['NX'], t['NY']
 ext = [X0, X0 + NX * CELL, Y0, Y0 + NY * CELL]
 
 d = json.load(open(RES, encoding='utf-8'))
+meta = d.get('meta', {})
+if (meta.get('density_on') is not False or
+        meta.get('profile_endpoints_fixed') is not False):
+    raise RuntimeError('Fig. C10 requires free-endpoint, density-disabled main results')
 A, C = d['M_A'], d['M_C']
 ax_, ay_ = np.array(A['plane_x']), np.array(A['plane_y'])
 cx_, cy_ = np.array(C['plane_x']), np.array(C['plane_y'])
+
+
+def overlap_lengths_km(scheme):
+    """独立从建筑分区图层计算叠加长度；该诊断量不参与优化。"""
+    x = np.asarray(scheme['plane_x'], float)
+    y = np.asarray(scheme['plane_y'], float)
+    sta = np.asarray(scheme['sta'], float)
+    if not (len(x) == len(y) == len(sta)) or len(sta) < 2:
+        raise ValueError('Invalid alignment arrays in main result')
+
+    def integrate(mask):
+        values = np.asarray(mask, dtype=float)
+        return float(np.sum(0.5 * (values[:-1] + values[1:]) * np.diff(sta))) / 1000.0
+
+    return dict(tier1=integrate(bm.tier1_at_xy(x, y)),
+                tier2=integrate(bm.tier2_at_xy(x, y)))
+
+
+overlap_A = overlap_lengths_km(A)
+overlap_C = overlap_lengths_km(C)
 
 fig, ax = plt.subplots(figsize=(15.2, 5.6), dpi=140)
 ax.set_rasterization_zorder(3)
@@ -58,22 +82,22 @@ ax.set_ylim(cy_.min() - 3000, cy_.max() + 3000)
 ax.set_xlabel('X East (m)')
 ax.set_ylabel('Y North (m)')
 tp, tf, dmax = bm.thresholds()
-ax.set_title('Density-zoning feasibility check  |  '
+ax.set_title('Building-density overlay (visualization only; not an optimization constraint)  |  '
              f'theta_forbid={tf:.4f} (= D_A_max {dmax:.4f} x 1.15)  |  '
-             f"M-C: Tier2 {C['L_dense2_km']:.3f} km (must be 0), "
-             f"Tier1 {C['L_dense1_km']:.2f} km")
+             f"M-C overlap: Tier2 {overlap_C['tier2']:.3f} km, "
+             f"Tier1 {overlap_C['tier1']:.2f} km")
 ax.legend(handles=[
-    Patch(facecolor='#b2182b', label='Tier2 forbidden (hard constraint)'),
-    Patch(facecolor='#f4a582', label='Tier1 passable with soft penalty'),
+    Patch(facecolor='#b2182b', label='Tier2 high-density area (visual context)'),
+    Patch(facecolor='#f4a582', label='Tier1 medium-density area (visual context)'),
     Line2D([0], [0], color='#0050ff', lw=2.4,
            label=f"M-C optimized ({C['L_km']:.2f} km)"),
     Line2D([0], [0], color='#222222', lw=1.4,
            label=f"M-A existing ({A['L_km']:.2f} km)"),
 ], loc='lower left', ncol=2, fontsize=9, framealpha=0.9)
 fig.tight_layout()
-out = os.path.join(FIG, '图C10_密度分区可行性核验.png')
+out = os.path.join(FIG, '图C10_建筑密度分布叠加_仅可视化.png')
 fig.savefig(out, facecolor='white')
 plt.close(fig)
 print(f'[图] {os.path.basename(out)}')
-print(f"  M-A: Tier2 {A['L_dense2_km']:.3f} km  Tier1 {A['L_dense1_km']:.2f} km")
-print(f"  M-C: Tier2 {C['L_dense2_km']:.3f} km  Tier1 {C['L_dense1_km']:.2f} km")
+print(f"  M-A: Tier2 {overlap_A['tier2']:.3f} km  Tier1 {overlap_A['tier1']:.2f} km")
+print(f"  M-C: Tier2 {overlap_C['tier2']:.3f} km  Tier1 {overlap_C['tier1']:.2f} km")

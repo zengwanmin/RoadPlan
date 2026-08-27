@@ -16,6 +16,7 @@ algorithms.py — 水母搜索(JS)及其改进(IJS)算法, Python实现
 """
 import math
 import numpy as np
+from acceleration import evaluate_many_ordered, evaluate_one
 
 
 def _simplebounds(s, lb, ub):
@@ -33,11 +34,12 @@ def _simplebounds(s, lb, ub):
     return np.clip(s, lb, ub)
 
 
-def _levy(dim, beta, rng):
+def _levy(dim, beta, rng, sigma_u=None):
     """Levy步长(levy.m / 式54)。"""
-    num = math.gamma(1 + beta) * np.sin(np.pi * beta / 2)
-    den = math.gamma((1 + beta) / 2) * beta * 2 ** ((beta - 1) / 2)
-    sigma_u = (num / den) ** (1 / beta)
+    if sigma_u is None:
+        num = math.gamma(1 + beta) * np.sin(np.pi * beta / 2)
+        den = math.gamma((1 + beta) / 2) * beta * 2 ** ((beta - 1) / 2)
+        sigma_u = (num / den) ** (1 / beta)
     u = rng.normal(0, sigma_u, dim)
     v = rng.normal(0, 1, dim)
     return u / (np.abs(v) ** (1 / beta))
@@ -79,7 +81,16 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
     lb = np.asarray(lb, float); ub = np.asarray(ub, float)
     pop = np.array(pop0, float).copy()
     nPop, dim = pop.shape
-    cost = np.array([fobj(pop[i]) for i in range(nPop)])
+    span = ub - lb
+    # IJS专用算子常数只计算一次；不消费随机数，也不改变候选生成顺序。
+    levy_sigma_u = None
+    if use_levy:
+        num = math.gamma(1 + levy_beta) * np.sin(np.pi * levy_beta / 2)
+        den = (math.gamma((1 + levy_beta) / 2) * levy_beta
+               * 2 ** ((levy_beta - 1) / 2))
+        levy_sigma_u = (num / den) ** (1 / levy_beta)
+    # 初始种群候选相互独立：有序批量评价不改变个体位置或随机数序列。
+    cost = evaluate_many_ordered(fobj, pop)
     nfe = nPop
 
     trace = dict(phase_dF={"main": [], "levy": [], "de": []},
@@ -92,9 +103,11 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
         for _ in range(tent_chains):
             r0 = np.where(r0 >= 0.5, mu_tent * (1 - r0), mu_tent * r0)
             r0 = np.clip(r0, 0, 1)
+        tent_pop = _simplebounds(r0 * span + lb, lb, ub)
+        tent_cost = evaluate_many_ordered(fobj, tent_pop, reject_above=cost)
         for i in range(nPop):
-            cand = _simplebounds(r0[i] * (ub - lb) + lb, lb, ub)
-            fc = fobj(cand); nfe += 1
+            cand = tent_pop[i]
+            fc = tent_cost[i]; nfe += 1
             if fc < cost[i]:
                 if track:
                     trace["tent_dF"] += float(cost[i] - fc)
@@ -129,9 +142,9 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
                     newsol = pop[i] + rng.random(dim) * step
                 else:
                     # 被动运动 (式49): Xi + γ'*rand*(ub-lb)
-                    newsol = pop[i] + 0.1 * (ub - lb) * rng.random()
+                    newsol = pop[i] + 0.1 * span * rng.random()
             newsol = _simplebounds(newsol, lb, ub)
-            fnew = fobj(newsol); nfe += 1
+            fnew = evaluate_one(fobj, newsol, reject_above=cost[i]); nfe += 1
             if fnew < cost[i]:
                 pop[i] = newsol; cost[i] = fnew
                 acc_main += 1
@@ -148,11 +161,18 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
         # 退化为无效随机重启; 缩放后成为围绕当前解的重尾局部探索。
         if use_levy:
             acc_levy = 0; f_before = best_cost
+            # Levy候选只依赖各自阶段起点，可先按原循环顺序消费随机数，再有序批量评价。
+            levy_pop = np.empty_like(pop)
             for i in range(nPop):
-                step = 0.01 * (ub - lb) * _levy(dim, levy_beta, rng)
+                step = 0.01 * span * _levy(
+                    dim, levy_beta, rng, sigma_u=levy_sigma_u)
                 cand = pop[i] + rng.random(dim) * step
-                cand = _simplebounds(cand, lb, ub)
-                fc = fobj(cand); nfe += 1
+                levy_pop[i] = _simplebounds(cand, lb, ub)
+            levy_cost = evaluate_many_ordered(fobj, levy_pop,
+                                               reject_above=cost.copy())
+            for i in range(nPop):
+                cand = levy_pop[i]
+                fc = levy_cost[i]; nfe += 1
                 if fc < cost[i]:
                     pop[i] = cand; cost[i] = fc
                     acc_levy += 1
@@ -167,11 +187,15 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
             acc_de = 0; f_before = best_cost
             for i in range(nPop):
                 r1, r2 = rng.integers(nPop), rng.integers(nPop)
-                mutant = pop[i] + rng.random(dim) * (pop[r1] - pop[r2])   # 变异(式56)
+                # 复用差分临时量，数学次序与原式完全一致，减少一次大数组分配。
+                diff = pop[r1] - pop[r2]
+                diff *= rng.random(dim)
+                mutant = pop[i] + diff                                  # 变异(式56)
                 mask = rng.random(dim) < CR                                # 交叉(式57)
-                cand = np.where(mask, pop[i], mutant)
+                mutant[mask] = pop[i, mask]
+                cand = mutant
                 cand = _simplebounds(cand, lb, ub)
-                fc = fobj(cand); nfe += 1
+                fc = evaluate_one(fobj, cand, reject_above=cost[i]); nfe += 1
                 if fc < cost[i]:                                           # 选择(式58)
                     pop[i] = cand; cost[i] = fc
                     acc_de += 1

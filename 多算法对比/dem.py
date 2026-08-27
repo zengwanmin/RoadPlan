@@ -32,6 +32,7 @@ dem.py — 走廊带数字高程模型(DEM)的加载、准天然地面重建与�
 """
 import os
 import numpy as np
+from acceleration import NUMBA_AVAILABLE, bilinear_kernel
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.path.dirname(HERE), "数据")
@@ -58,6 +59,7 @@ def _load():
         _D = dict(elev=d["elev"].astype(np.float64), z=int(d["z"]),
                   x0=int(d["x0"]), y0=int(d["y0"]))
         _D["H"], _D["W"] = _D["elev"].shape
+        _D["elev"].setflags(write=False)
     return _D
 
 
@@ -146,7 +148,14 @@ def _load_natural():
         d = np.load(NATURAL_NPZ)
         _N = dict(natural=d["natural"].astype(np.float64),
                   eco=d["eco"].astype(bool))
+        _N["natural"].setflags(write=False)
+        _N["eco"].setflags(write=False)
     return _N
+
+
+def preload_readonly():
+    """每个worker只加载一次DEM/准天然地面，并以只读数组供所有算法共享。"""
+    _load(); _load_natural()
 
 
 # =============================================================
@@ -155,6 +164,11 @@ def _load_natural():
 def _bilinear(E, px, py):
     d = _load()
     Hh, Ww = d["H"], d["W"]
+    if NUMBA_AVAILABLE:
+        pxa, pya = np.broadcast_arrays(np.asarray(px, dtype=np.float64),
+                                       np.asarray(py, dtype=np.float64))
+        out = bilinear_kernel(E, pxa.ravel(), pya.ravel(), Hh, Ww)
+        return out.reshape(pxa.shape)
     px = np.clip(px, 0.0, Ww - 1.001)
     py = np.clip(py, 0.0, Hh - 1.001)
     j0 = np.floor(px).astype(int); i0 = np.floor(py).astype(int)

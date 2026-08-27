@@ -44,14 +44,13 @@ RESULTS = os.path.join(HERE, "results"); os.makedirs(RESULTS, exist_ok=True)
 
 SOURCE_FINGERPRINT_FILES = (
     "run_joint.py", "objective_joint.py", "objective.py", "algorithms.py",
-    "params.py", "data_loader.py", "dem.py", "building_mask.py",
+    "params.py", "data_loader.py", "dem.py",
     "crossings.py", "safety.py",
 )
 DATA_FINGERPRINT_FILES = (
     os.path.join("数据", "数据.xlsx"),
     os.path.join("数据", "走廊带DEM_z14_ext.npz"),
     os.path.join("数据", "走廊带DEM_z14_ext_natural.npz"),
-    os.path.join("数据", "OSM走廊带障碍物", "density_tiers_V1.npz"),
     os.path.join("数据", "OSM走廊带障碍物", "obstacles.npz"),
     os.path.join("数据", "OSM走廊带障碍物", "ic_anchor_cache.json"),
 )
@@ -148,12 +147,11 @@ def _load_checkpoint(path, config, expected_tags, fresh=False):
     return state
 
 
-def _init_worker(align, ctx, corridor, density_on):
+def _init_worker(align, ctx, corridor):
     """worker 初始化: 重建 plane context(含 cKDTree)与共享寻优上下文, 每进程一次。
-    先同步走廊带与密度开关(fork 会继承, 但 spawn 不会 -> 显式设置更稳健)。"""
+    先同步走廊带(fork 会继承, 但 spawn 不会 -> 显式设置更稳健)。"""
     global _PC, _CTX
     OJ.set_corridor(corridor)
-    OJ.set_density(density_on)
     _PC = make_plane_context(align)
     _CTX = ctx
 
@@ -189,10 +187,6 @@ def evaluate_joint(x, pc):
                 L_eco_km=info["L_eco_km"], L_ic_km=info["L_ic_km"],
                 L_bridge_new=info["L_bridge_new"],
                 L_tunnel_new=info["L_tunnel_new"],
-                L_dense1_km=info["L_dense1_km"],
-                L_dense2_km=info["L_dense2_km"],
-                soft_dense1=info["soft_dense1"],
-                dense_depth_max=info["dense_depth_max"],
                 plane_x=d["xx"].tolist(), plane_y=d["yy"].tolist(),
                 design_z=d["design_z"].tolist(), sta=d["sta"].tolist(),
                 gz_new=d["gz_new"].tolist(), Q_series=Q_series.tolist())
@@ -229,8 +223,6 @@ def main():
                     help="并行进程数(默认: 按任务数与 CPU 核数自适应)")
     ap.add_argument("--corridor", type=float, default=None,
                     help="走廊带半宽 m(默认沿用模块设置 500)")
-    ap.add_argument("--no-density", action="store_true",
-                    help="关闭建筑密度约束(A/B 对照用)")
     ap.add_argument("--pareto", type=int, default=21,
                     help="Pareto 权重扫描点数(默认21; 减少可显著缩短总耗时)")
     ap.add_argument("--fresh", action="store_true",
@@ -240,13 +232,11 @@ def main():
     # 走廊带必须在 make_plane_context 之前设置(影响模态幅值 -> 平面上下文)
     if args.corridor is not None:
         OJ.set_corridor(args.corridor)
-    OJ.set_density(not args.no_density)
 
     if args.smoke:
         result_name = "joint_results_smoke.json"
     else:
-        density_tag = "dens" if OJ.DENSITY_ON else "nodens"
-        result_name = f"joint_results_w{int(OJ.CORRIDOR_HALF_W)}_{density_tag}.json"
+        result_name = f"joint_results_w{int(OJ.CORRIDOR_HALF_W)}_nodens.json"
     result_path = os.path.join(RESULTS, result_name)
     partial_path = result_path.replace(".json", ".partial.json")
 
@@ -263,7 +253,7 @@ def main():
     print(f"[数据] 北环高速 {align['total_km']:.3f} km")
     print(f"[联合] 决策维度 dim={dim} (平面模态{N_MODE} + 纵断面{M_PROF}), "
           f"走廊带±{OJ.CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}, "
-          f"密度约束={'ON' if OJ.DENSITY_ON else 'OFF'}")
+          "纵断面端点自由, 建筑密度约束=OFF")
 
     # ---------- 熵权法权重(基准种群客观确定, 式5.3-5.4) ----------
     # 由 joint_baseline 统一产出, 两阶段对照(run_twostage.py)共用同一组
@@ -275,10 +265,12 @@ def main():
     pop0 = base.copy()          # M-B/M-C/Pareto 共享同一初始种群保证公平
 
     config = dict(
-        schema="joint-main-resume-v1",
+        schema="joint-main-resume-v2",
         repository_head=_git_head(),
         corridor_half_w=float(OJ.CORRIDOR_HALF_W),
-        density_on=bool(OJ.DENSITY_ON), smoke=bool(args.smoke),
+        density_on=False,
+        profile_endpoints_fixed=bool(OJ.PROFILE_ENDPOINTS_FIXED),
+        smoke=bool(args.smoke),
         dim=int(dim), n_mode=int(N_MODE), M_prof=int(M_PROF),
         pop_size=int(POP_SIZE), max_iter=int(MAX_ITER),
         n_pareto=int(n_pareto), optimizer_seed=1000,
@@ -324,7 +316,7 @@ def main():
 
     if tasks:
         with mp.Pool(n_workers, initializer=_init_worker,
-                     initargs=(align, ctx, OJ.CORRIDOR_HALF_W, OJ.DENSITY_ON)) as pool:
+                     initargs=(align, ctx, OJ.CORRIDOR_HALF_W)) as pool:
             for k, rec in enumerate(pool.imap_unordered(_solve_one, tasks), 1):
                 solved[rec["tag"]] = rec
                 checkpoint["records"] = [solved[tag] for tag in expected_tags if tag in solved]
@@ -373,7 +365,6 @@ def main():
             and c["C"] <= (1 + BUDGET_TOL) * res_A["C"]]
     if not feas:
         # 空集会让下面的 front[...] / M.min(0) 直接抛异常, 且看不出原因。
-        # 密度 Tier2 这类硬约束收紧后确有可能全部候选不可行, 故降级并说明原因。
         pen_ok = [c for c in cands if c["pen"] <= 1e-6]
         pen_min = min((c["pen"] for c in cands), default=float("nan"))
         if pen_ok:
@@ -383,8 +374,7 @@ def main():
             feas = pen_ok
         else:
             print(f"[警告] 无候选满足 pen<=1e-6(最小惩罚 {pen_min:.6g}) -> "
-                  f"退化为按最小惩罚选择。请检查硬约束(密度 Tier2 / 最小半径)是否过严, "
-                  f"以及走廊带是否被禁区封堵(见 building_density.corridor_passability)",
+                  "退化为按最小惩罚选择。请检查平曲线半径、纵坡与坡差等线形约束",
                   flush=True)
             feas = [c for c in cands if c["pen"] <= pen_min + 1e-12]
     front = [c for c in feas
@@ -431,17 +421,18 @@ def main():
     out = dict(
         meta=dict(dim=dim, n_mode=N_MODE, M_prof=M_PROF,
                   corridor_half_w=OJ.CORRIDOR_HALF_W, pop_size=POP_SIZE,
-                  density_on=bool(OJ.DENSITY_ON),
+                  density_on=False,
+                  profile_endpoints_fixed=bool(OJ.PROFILE_ENDPOINTS_FIXED),
                   max_iter=MAX_ITER, wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
                   total_km=align["total_km"], Rmin_req=400,
                   step_plane_m=STEP_PLANE_M, step_profile_m=STEP_PROFILE_M,
                   n_pareto=n_pareto, smoke=bool(args.smoke),
                   n_workers=n_workers,
                   energy_unit="全生命周期元(亿元)",
-                  note="平纵联合协同优化(准天然地面DEM口径): 立交7.8km常数计费"
-                       "+桩号带土方豁免, 白云山隧道由生态区穿越长度内生, "
-                       f"走廊带±{OJ.CORRIDOR_HALF_W:.0f}m, 密度约束="
-                       f"{'ON' if OJ.DENSITY_ON else 'OFF'}; M-C=前沿熵权决策"
+                  note="平纵联合协同优化(准天然地面DEM口径): OSM交叉桥内生触发, "
+                       "白云山隧道由生态区穿越长度内生, 纵断面首末端自由, "
+                       f"走廊带±{OJ.CORRIDOR_HALF_W:.0f}m, 建筑密度不进入约束; "
+                       "M-C=前沿熵权决策"
                        "(可行+预算约束C≤1.1×现状+非支配+熵权, 论文第5章流程)"),
         provenance=dict(config_fingerprint=_fingerprint(config), config=config),
         M_A=res_A, M_B=res_B, M_C=res_C, M_C_scalar=res_C_scalar,

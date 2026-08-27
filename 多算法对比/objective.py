@@ -18,6 +18,9 @@ import numpy as np
 from params import (FUEL_CAR, EV, PHYS, TRAFFIC, ENERGY_PRICE, COST_UNIT,
                     LCC, EARTHWORK, BRIDGE_TUNNEL, DESIGN_STD, LONG_STD_100,
                     CASE, FLAT_STD_100, MAINTENANCE)
+from acceleration import (NUMBA_AVAILABLE, ScalarObjective,
+                          earthwork_arrays_kernel, fuel_segments_kernel,
+                          ev_segments_kernel)
 
 
 # =============================================================
@@ -71,12 +74,6 @@ def earthwork_cost(sta, gz, design_z, road_width,
     # 断面填/挖面积(含边坡放坡, 近似梯形): A = W*h + m*h^2
     m = EARTHWORK["side_slope"]
     h = np.abs(dz)
-    area = road_width * h + m * h * h     # m^2 (即每米路线的土方体积 m^3/m)
-    fill_cost_pm = np.where(dz > 0, EARTHWORK["Kh_fill_per_m3"] * area, 0.0)
-    cut_cost_pm = np.where(dz < 0, EARTHWORK["Ks_cut_per_m3"] * area, 0.0)
-
-    use_bridge = np.zeros(len(sta), dtype=bool)
-    use_tunnel = np.zeros(len(sta), dtype=bool)
     # 结构替代 = 成本判据 ∪ 30m 硬判据(《新理念公路设计指南》/论文§3.4.2):
     #   成本判据: 土方费超过结构单价即改结构(费用封顶, 连续无跳变激励);
     #   硬判据: 填方>30m 强制按桥、挖方>30m 强制按隧道计费——弥合"成本交叉点
@@ -84,21 +81,37 @@ def earthwork_cost(sta, gz, design_z, road_width,
     #   无套利空间(不存在往阈值凑的激励)。
     h30 = BRIDGE_TUNNEL["fill_height_bridge_m"]
     d30 = BRIDGE_TUNNEL["cut_depth_tunnel_m"]
-    if bridge_cap_per_m is not None:
-        use_bridge = (dz > 0) & ((fill_cost_pm > bridge_cap_per_m) | (h > h30))
-        fill_cost_pm = np.where(use_bridge, bridge_cap_per_m, fill_cost_pm)
-    if tunnel_cap_per_m is not None:
-        use_tunnel = (dz < 0) & ((cut_cost_pm > tunnel_cap_per_m) | (h > d30))
-        cut_cost_pm = np.where(use_tunnel, tunnel_cap_per_m, cut_cost_pm)
-
-    if exempt is not None:
-        ex = np.asarray(exempt, bool)
+    ex = (np.asarray(exempt, dtype=bool) if exempt is not None
+          else np.zeros(len(sta), dtype=bool))
+    if NUMBA_AVAILABLE:
+        area, fill_cost_pm, cut_cost_pm, use_bridge, use_tunnel = \
+            earthwork_arrays_kernel(
+                np.asarray(dz, dtype=np.float64), float(road_width), float(m),
+                float(EARTHWORK["Kh_fill_per_m3"]),
+                float(EARTHWORK["Ks_cut_per_m3"]),
+                -1.0 if bridge_cap_per_m is None else float(bridge_cap_per_m),
+                -1.0 if tunnel_cap_per_m is None else float(tunnel_cap_per_m),
+                float(h30), float(d30), ex)
+    else:
+        area = road_width * h + m * h * h
+        fill_cost_pm = np.where(
+            dz > 0, EARTHWORK["Kh_fill_per_m3"] * area, 0.0)
+        cut_cost_pm = np.where(
+            dz < 0, EARTHWORK["Ks_cut_per_m3"] * area, 0.0)
+        use_bridge = np.zeros(len(sta), dtype=bool)
+        use_tunnel = np.zeros(len(sta), dtype=bool)
+        if bridge_cap_per_m is not None:
+            use_bridge = ((dz > 0)
+                          & ((fill_cost_pm > bridge_cap_per_m) | (h > h30)))
+            fill_cost_pm = np.where(use_bridge, bridge_cap_per_m, fill_cost_pm)
+        if tunnel_cap_per_m is not None:
+            use_tunnel = ((dz < 0)
+                          & ((cut_cost_pm > tunnel_cap_per_m) | (h > d30)))
+            cut_cost_pm = np.where(use_tunnel, tunnel_cap_per_m, cut_cost_pm)
         fill_cost_pm = np.where(ex, 0.0, fill_cost_pm)
         cut_cost_pm = np.where(ex, 0.0, cut_cost_pm)
         use_bridge = use_bridge & ~ex
         use_tunnel = use_tunnel & ~ex
-    else:
-        ex = np.zeros(len(sta), dtype=bool)
 
     dL = np.diff(sta)
     seg_pm = 0.5 * (fill_cost_pm[:-1] + fill_cost_pm[1:]) \
@@ -246,6 +259,18 @@ def fuel_energy(sta, design_z, v_kmh, R=None):
     v = v_kmh / 3.6                       # m/s
     fc = FUEL_CAR
     m = fc["mass_kg"]; g = PHYS["g"]; rho = PHYS["rho_air"]
+    if NUMBA_AVAILABLE:
+        radius = (np.empty(0, dtype=np.float64) if R is None
+                  else np.asarray(R, dtype=np.float64))
+        seg_ml = fuel_segments_kernel(
+            np.asarray(sta, dtype=np.float64),
+            np.asarray(design_z, dtype=np.float64), float(v), radius, R is not None,
+            float(m), float(g), float(rho), float(fc["C_aero"]),
+            float(fc["A_front"]), float(fc["Cr"]),
+            float(FLAT_STD_100["superelev_max"]), float(fc["NV"]),
+            float(fc["CS"]), float(PHYS["W_denom"]), float(fc["eta"]),
+            float(fc["phi"]), float(fc["HPin"]))
+        return float(np.sum(seg_ml))
     grades = _grades(sta, design_z)       # 各坡段纵坡(tanθ)
     theta = np.arctan(grades)             # 坡度角
     dL = np.diff(sta)                     # 坡段长(m)
@@ -281,6 +306,19 @@ def ev_energy(sta, design_z, v_kmh, R=None):
     v = v_kmh / 3.6
     ev = EV
     m = ev["mass_kg"]; g = PHYS["g"]; rho = PHYS["rho_air"]
+    if NUMBA_AVAILABLE:
+        radius = (np.empty(0, dtype=np.float64) if R is None
+                  else np.asarray(R, dtype=np.float64))
+        seg_e = ev_segments_kernel(
+            np.asarray(sta, dtype=np.float64),
+            np.asarray(design_z, dtype=np.float64), float(v), radius, R is not None,
+            float(m), float(g), float(rho), float(ev["C_aero"]),
+            float(ev["A_front"]), float(ev["Cr"]),
+            float(FLAT_STD_100["superelev_max"]), float(ev["NV"]),
+            float(ev["CS"]), float(ev["ea"] * ev["eb"]))
+        drive = float(np.sum(seg_e)) / 3.6e6
+        air = (ev["EH_kwh_per_100"] / 100.0) * ((sta[-1] - sta[0]) / 1000.0)
+        return max(drive, 0.0) + air
     grades = _grades(sta, design_z)
     theta = np.arctan(grades)
     dL = np.diff(sta)
@@ -312,7 +350,18 @@ def ev_energy(sta, design_z, v_kmh, R=None):
 # =============================================================
 #  两目标 C, E  (式4.25-4.26)
 # =============================================================
-def objectives(x, ctx):
+def _profile_penalty(sta, design_z):
+    """仅由候选纵断面决定的非负约束罚项，可作为完整目标的严格下界。"""
+    grades = _grades(sta, design_z)
+    over = np.abs(grades) - LONG_STD_100["grade_max"]
+    pen = np.sum(np.where(over > 0, over, 0.0)) * 1e9
+    dg_lim = 3e-4 * float(np.mean(np.diff(sta)))
+    dgrade = np.abs(np.diff(grades))
+    pen += np.sum(np.where(dgrade > dg_lim, dgrade - dg_lim, 0.0)) * 5e8
+    return float(pen)
+
+
+def objectives(x, ctx, reject_penalty=None):
     """
     输入决策向量 x∈[0,1]^dim, 返回 (C, E, penalty, info)。
     C: 全生命周期成本(元)  E: 油电混合车流全生命周期货币化能耗(元)
@@ -326,6 +375,10 @@ def objectives(x, ctx):
     L_eco_km = ctx.get("L_eco_km", 0.0)
     v = CASE["design_speed_kmh"]
     design_z = decode(x, sta, gz)
+    pen = _profile_penalty(sta, design_z)
+    # C、E 及其权重项均非负；罚项已不小于接受阈值时可安全拒绝。
+    if reject_penalty is not None and pen >= float(reject_penalty):
+        return np.nan, np.nan, pen, {"early_reject": True}
 
     # ---- 目标一 C (式4.25): 含结构替代封顶(§3.4.2)与豁免带 ----
     C_TU, Vs, Vh, _ = earthwork_cost(
@@ -353,21 +406,6 @@ def objectives(x, ctx):
     E_fuel = AADT * n1 * (ml / 1000.0) * ENERGY_PRICE["Kf_fuel"] * lc_factor  # 全周期 元
     E_ele = AADT * n2 * kwh * ENERGY_PRICE["ZQ_elec"] * lc_factor            # 全周期 元
     E = E_fuel + E_ele                                          # 式4.26(ω,n并入), 全周期元
-
-    # ---- 约束惩罚 (§4.5.3 坡度/竖曲线) ----
-    grades = _grades(sta, design_z)
-    pen = 0.0
-    gmax = LONG_STD_100["grade_max"]; gmin = LONG_STD_100["grade_min"]
-    # 坡度约束 imin<=|i|<=imax (式4.27): 超限惩罚
-    over = np.abs(grades) - gmax
-    pen += np.sum(np.where(over > 0, over, 0.0)) * 1e9
-    # 相邻坡度代数差(竖曲线约束 式4.28 近似): 限制变坡率。
-    # 限值按桩号步长归一: 基准 0.03/100m -> 3e-4 每米, dg_lim = 3e-4×步长,
-    # 使不同桩号步长(多算法对比 P1-P6)下的物理约束(单位长度坡率变化)一致。
-    ds_mean = float(np.mean(np.diff(sta)))
-    dg_lim = 3e-4 * ds_mean
-    dgrade = np.abs(np.diff(grades))
-    pen += np.sum(np.where(dgrade > dg_lim, dgrade - dg_lim, 0.0)) * 5e8
 
     info = dict(C_PING=C_PING, C_TU=C_TU, E_fuel=E_fuel, E_ele=E_ele,
                 Vs=Vs, Vh=Vh, ml=ml, kwh=kwh, **cinfo)
@@ -413,7 +451,15 @@ def make_scalar_fn(ctx, wC, wE, C_ref, E_ref):
         C, E, pen, _ = objectives(x, ctx)
         F = wC * (C / C_ref) + wE * (E / E_ref) + pen / C_ref
         return F
-    return f
+
+    def bounded(x, limit):
+        C, E, pen, info = objectives(x, ctx,
+                                     reject_penalty=limit * C_ref)
+        if info.get("early_reject", False):
+            return limit
+        return wC * (C / C_ref) + wE * (E / E_ref) + pen / C_ref
+
+    return ScalarObjective(f, bounded)
 
 
 def make_biobj_fn(ctx, C_ref, E_ref):
@@ -447,6 +493,8 @@ def fixed_plane_ctx(align, step_m=100.0):
     x_sta = np.interp(sta, s, X)
     y_sta = np.interp(sta, s, Y)
     lat0, lon0 = float(align["lat"][0]), float(align["lon"][0])
+    dem.preload_readonly()
+    _cr.preload_readonly(lat0, lon0)
     gz = dem.ground_elev_xy(x_sta, y_sta, lat0, lon0, natural=True)
     eco = dem.eco_mask_xy(x_sta, y_sta, lat0, lon0)
 

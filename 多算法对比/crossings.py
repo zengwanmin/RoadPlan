@@ -18,6 +18,7 @@ crossings.py — 平面线形与 OSM 障碍物(道路/铁路/水系)的交叉检
 import os
 
 import numpy as np
+from acceleration import NUMBA_AVAILABLE, segment_intersections_kernel
 
 from params import BRIDGE_TUNNEL
 
@@ -91,7 +92,16 @@ def _load_obstacles(lat0, lon0):
     grid = {c: np.asarray(v, dtype=int) for c, v in grid.items()}
     _OBS = dict(px1=px1, py1=py1, px2=px2, py2=py2,
                 width=width, hclear=hclear, kcode=kcode, grid=grid)
+    for key in ("px1", "py1", "px2", "py2", "width", "hclear", "kcode"):
+        _OBS[key].setflags(write=False)
+    for values in grid.values():
+        values.setflags(write=False)
     return _OBS
+
+
+def preload_readonly(lat0, lon0):
+    """每个worker预加载一次投影后的OSM线段和空间索引。"""
+    return _load_obstacles(float(lat0), float(lon0))
 
 
 def detect_crossings(xx, yy, lat0, lon0, step_m=50.0):
@@ -140,11 +150,15 @@ def detect_crossings(xx, yy, lat0, lon0, step_m=50.0):
     # 矢量化线段求交: A=(p, r), B=(q, w); t=cross(q-p,w)/cross(r,w), u=cross(q-p,r)/...
     rpx = ax[ia + 1] - ax[ia]; rpy = ay[ia + 1] - ay[ia]
     qwx = px2[ib] - px1[ib];   qwy = py2[ib] - py1[ib]
-    dqx = px1[ib] - ax[ia];    dqy = py1[ib] - ay[ia]
-    den = rpx * qwy - rpy * qwx
-    ok = np.abs(den) > 1e-12
-    t = np.where(ok, (dqx * qwy - dqy * qwx) / np.where(ok, den, 1.0), -1.0)
-    u = np.where(ok, (dqx * rpy - dqy * rpx) / np.where(ok, den, 1.0), -1.0)
+    if NUMBA_AVAILABLE:
+        ok, t, u = segment_intersections_kernel(
+            ax, ay, px1, py1, px2, py2, ia, ib)
+    else:
+        dqx = px1[ib] - ax[ia]; dqy = py1[ib] - ay[ia]
+        den = rpx * qwy - rpy * qwx
+        ok = np.abs(den) > 1e-12
+        t = np.where(ok, (dqx * qwy - dqy * qwx) / np.where(ok, den, 1.0), -1.0)
+        u = np.where(ok, (dqx * rpy - dqy * rpx) / np.where(ok, den, 1.0), -1.0)
     hit = ok & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
     if not np.any(hit):
         return dict(s=np.empty(0), theta=np.empty(0), width=np.empty(0),

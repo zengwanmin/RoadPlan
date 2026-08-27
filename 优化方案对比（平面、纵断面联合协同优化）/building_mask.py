@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-building_mask.py — 建筑密度分区(Tier2 禁行 / Tier1 可穿越)的逐桩号采样
+building_mask.py — 建筑密度分区的逐桩号采样（仅供图C10可视化诊断）
 
 【数据来源】数据/OSM走廊带障碍物/density_tiers_V1.npz
   由 data 分支 data/osm/buildings/building_density.py::export_tiers 生成(选定版本 V1 = 方案A)。
   完整方法、标定原理与局限见 data 分支 data/docs/数据来源与处理说明.md §2.8。
 
 【三级分区与阈值标定】
-  Tier2 严格禁行: D > θ_forbid 的连通密集核心 -> 硬约束(计入 pen)
-  Tier1 可穿越但抑制: θ_pass < D <= θ_forbid  -> 软代价(【不进 pen】)
+  Tier2 高密度核心: D > θ_forbid
+  Tier1 中密度区域: θ_pass < D <= θ_forbid
   Tier0 自由
+  最终实验不把上述分区加入目标、惩罚或可行性约束，只用其绘制空间背景并统计
+  线位叠加长度。
   阈值由现状线位标定: θ_forbid = 现状线位沿程最大密度 D_A_max × margin(1.15)。
   既有高速已建成并穿过居民区, 即"该密度可穿"的经验铁证; margin>=1 使 M-A 基准方案
   在 Tier2 上天然可行, 无需任何特例豁免。
@@ -89,19 +91,19 @@ def _nearest(M, gx, gy):
 
 
 def depth2_at_xy(X, Y):
-    """Tier2 禁区内深度(m), 双线性插值; 禁区外为 0。"""
+    """Tier2 高密度核心内部深度(m)，供可视化诊断。"""
     gx, gy = _to_grid(X, Y)
     return np.maximum(_bilinear(_load()["depth2"], gx, gy), 0.0)
 
 
 def tier2_at_xy(X, Y):
-    """是否落在 Tier2 禁行区(布尔, 最近邻; 仅用于长度诊断)。"""
+    """是否落在 Tier2 高密度核心(布尔, 最近邻; 仅用于长度诊断)。"""
     gx, gy = _to_grid(X, Y)
     return _nearest(_load()["tier2"], gx, gy)
 
 
 def tier1_at_xy(X, Y):
-    """是否落在 Tier1 可穿越带(布尔, 最近邻)。"""
+    """是否落在 Tier1 中密度区域(布尔, 最近邻; 仅用于长度诊断)。"""
     gx, gy = _to_grid(X, Y)
     return _nearest(_load()["tier1"], gx, gy)
 

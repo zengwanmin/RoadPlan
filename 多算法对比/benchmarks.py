@@ -9,6 +9,7 @@ benchmarks.py — 对比算法(GA/PSO/GWO)与 NSGA-II 的 Python 实现
 返回统一 dict(best_x, best_f, curve, nfe) (标量算法) 或 front 相关 (NSGA-II)。
 """
 import numpy as np
+from acceleration import evaluate_many_ordered, evaluate_one
 
 
 # =============================================================
@@ -19,7 +20,7 @@ def run_GA(fobj, lb, ub, pop0, max_iter, seed, p1=0.8, p2=0.2, record=True):
     lb = np.asarray(lb, float); ub = np.asarray(ub, float)
     x = np.array(pop0, float).copy()
     n, dim = x.shape
-    y = np.array([fobj(x[i]) for i in range(n)]); nfe = n
+    y = evaluate_many_ordered(fobj, x); nfe = n
     yp = y.copy(); xp = x.copy()
     gi = np.argmin(y); yg = y[gi]; xg = x[gi].copy()
     curve = [yg]
@@ -41,8 +42,10 @@ def run_GA(fobj, lb, ub, pop0, max_iter, seed, p1=0.8, p2=0.2, record=True):
                 tmp = rng.random(dim) * (ub - lb) + lb
                 newX[i, m] = tmp[m]
         newX = np.clip(newX, lb, ub)
+        newY = evaluate_many_ordered(fobj, newX, reject_above=yp)
+        nfe += n
         for i in range(n):
-            ny = fobj(newX[i]); nfe += 1
+            ny = newY[i]
             if ny < yp[i]:
                 yp[i] = ny; xp[i] = newX[i]
                 if ny < yg:
@@ -62,7 +65,7 @@ def run_PSO(fobj, lb, ub, pop0, max_iter, seed, w=0.8, c1=2.0, c2=2.0, record=Tr
     x = np.array(pop0, float).copy()
     n, dim = x.shape
     v = rng.standard_normal((n, dim))
-    y = np.array([fobj(x[i]) for i in range(n)]); nfe = n
+    y = evaluate_many_ordered(fobj, x); nfe = n
     yp = y.copy(); xp = x.copy()
     gi = np.argmin(y); yg = y[gi]; xg = x[gi].copy()
     curve = [yg]
@@ -71,7 +74,7 @@ def run_PSO(fobj, lb, ub, pop0, max_iter, seed, w=0.8, c1=2.0, c2=2.0, record=Tr
         for i in range(n):
             v[i] = w * v[i] + c1 * r1[i] * (xg - x[i]) + c2 * r2[i] * (xp[i] - x[i])
             x[i] = np.clip(x[i] + v[i], lb, ub)
-            yi = fobj(x[i]); nfe += 1
+            yi = evaluate_one(fobj, x[i], reject_above=yp[i]); nfe += 1
             if yi < yp[i]:
                 yp[i] = yi; xp[i] = x[i].copy()
                 if yi < yg:
@@ -89,7 +92,7 @@ def run_GWO(fobj, lb, ub, pop0, max_iter, seed, record=True):
     lb = np.asarray(lb, float); ub = np.asarray(ub, float)
     x = np.array(pop0, float).copy()
     n, dim = x.shape
-    y = np.array([fobj(x[i]) for i in range(n)]); nfe = n
+    y = evaluate_many_ordered(fobj, x); nfe = n
     order = np.argsort(y)
     Apos, Bpos, Dpos = x[order[0]].copy(), x[order[1]].copy(), x[order[2]].copy()
     Asc, Bsc, Dsc = y[order[0]], y[order[1]], y[order[2]]
@@ -106,7 +109,7 @@ def run_GWO(fobj, lb, ub, pop0, max_iter, seed, record=True):
             A3 = 2 * a * rng.random(dim) - a; C3 = 2 * rng.random(dim)
             X3 = Dpos - A3 * np.abs(C3 * Dpos - x[i])
             x[i] = np.clip((X1 + X2 + X3) / 3.0, lb, ub)
-            nf = fobj(x[i]); nfe += 1
+            nf = evaluate_one(fobj, x[i], reject_above=Dsc); nfe += 1
             if nf < Asc:
                 Dsc, Dpos = Bsc, Bpos.copy(); Bsc, Bpos = Asc, Apos.copy()
                 Asc, Apos = nf, x[i].copy()
@@ -167,17 +170,26 @@ def _crowding_distance(F, idx):
     return dist
 
 
-def run_NSGA2(fobj_bi, lb, ub, pop0, max_iter, seed, pc=0.9, pm=0.1, eta=20.0):
+def run_NSGA2(fobj_bi, lb, ub, pop0, max_iter, seed, pc=0.9, pm=0.1,
+              eta=20.0, scalar_weights=None, record=True):
     """
     NSGA-II 双目标求解。fobj_bi(x)->[C_norm, E_norm]。
-    返回 dict(front_X, front_F, all_F_hist).
+    scalar_weights: 给定(wC, wE)时，逐代记录当前种群的最优加权标量值，
+                    使NSGA-II可与其余算法进行30次收敛轨迹统计。
+    返回 dict(front_X, front_F, curve, nfe, all_F)。
     """
     rng = np.random.default_rng(seed)
     lb = np.asarray(lb, float); ub = np.asarray(ub, float)
     P = np.array(pop0, float).copy()
     n, dim = P.shape
-    F = np.array([fobj_bi(P[i]) for i in range(n)])
+    F = evaluate_many_ordered(fobj_bi, P)
     nfe = n
+    scalar_weights = (None if scalar_weights is None
+                      else np.asarray(scalar_weights, dtype=float))
+    if scalar_weights is not None and scalar_weights.shape != (2,):
+        raise ValueError("scalar_weights必须为(wC, wE)两个权重")
+    curve = ([float(np.min(F @ scalar_weights))]
+             if record and scalar_weights is not None else [])
 
     def make_offspring(P, F):
         # 锦标赛选择(基于前沿层级+拥挤距离)(§5.3.1 步骤5)
@@ -221,7 +233,7 @@ def run_NSGA2(fobj_bi, lb, ub, pop0, max_iter, seed, pc=0.9, pm=0.1, eta=20.0):
 
     for _ in range(max_iter):
         Q = make_offspring(P, F)
-        FQ = np.array([fobj_bi(Q[i]) for i in range(n)]); nfe += n
+        FQ = evaluate_many_ordered(fobj_bi, Q); nfe += n
         # 合并父子代 (§5.3.2 步骤3)
         R = np.vstack([P, Q]); FR = np.vstack([F, FQ])
         fronts = _fast_nondominated_sort(FR)
@@ -237,11 +249,14 @@ def run_NSGA2(fobj_bi, lb, ub, pop0, max_iter, seed, pc=0.9, pm=0.1, eta=20.0):
                 break
         newP_idx = np.array(newP_idx)
         P = R[newP_idx]; F = FR[newP_idx]
+        if record and scalar_weights is not None:
+            curve.append(float(np.min(F @ scalar_weights)))
 
     # 输出第一前沿
     fronts = _fast_nondominated_sort(F)
     f0 = np.array(fronts[0])
-    return dict(front_X=P[f0], front_F=F[f0], nfe=nfe, all_F=F)
+    return dict(front_X=P[f0], front_F=F[f0], curve=np.asarray(curve),
+                nfe=nfe, all_F=F)
 
 
 BENCH_SCALAR = {"GA": run_GA, "PSO": run_PSO, "GWO": run_GWO}
