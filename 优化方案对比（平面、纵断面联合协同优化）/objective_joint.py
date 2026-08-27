@@ -51,12 +51,11 @@ import numpy as np
 from scipy.interpolate import splprep, splev
 
 from params import (CASE, EARTHWORK, TRAFFIC, ENERGY_PRICE, LONG_STD_100, LCC,
-                    FLAT_STD_100, BRIDGE_TUNNEL, DENSITY, PENALTY)
+                    FLAT_STD_100, BRIDGE_TUNNEL, PENALTY)
 from objective import (earthwork_cost, lcc_ping, fuel_energy, ev_energy,
                        entropy_weights, _grades)
 from data_loader import load_alignment
 import dem
-import building_mask
 
 CORRIDOR_HALF_W = 500.0     # 走廊带半宽(m): 主实验口径 ±500m(±250m 作敏感性情景)
 STEP_PLANE_CTRL_M = 150.0   # 平面决策变量间距(m): 受R≥400m约束, ≥150m贴地才可行
@@ -243,13 +242,7 @@ def set_corridor(half_w_m):
     MODE_AMPS = _mode_amps()
 
 
-DENSITY_ON = True      # 建筑密度约束总开关(供 A/B 对照关闭, 见 run_joint --no-density)
-
-
-def set_density(on):
-    """运行时开关建筑密度约束(Tier2 硬罚 + Tier1 软抑制)。关闭后二者均不计入目标。"""
-    global DENSITY_ON
-    DENSITY_ON = bool(on)
+PROFILE_ENDPOINTS_FIXED = False  # 最终主实验口径: 纵断面首末高程均由优化变量自由确定
 
 
 def set_profile_step(step_m):
@@ -276,43 +269,19 @@ def delta_from_modes(coef_norm):
     return (np.sin(np.outer(u, k) * np.pi) * a).sum(axis=1)
 
 
-def profile_from_grades(prof_norm, gz_ctrl, ds_ctrl, grade_max, z_tie=None):
+def profile_from_grades(prof_norm, gz_ctrl, ds_ctrl, grade_max):
     """
     由归一化纵断面变量生成变坡点设计高程。
 
     prof_norm[0]   : 起点高程相对该处地面的偏移(归一化到 ±START_AMP_M)
-                     —— 给定 z_tie 时该量被忽略(起点高程由接线高程锚定)
     prof_norm[1:]  : 各坡段纵坡(归一化到 ±grade_max) —— 纵坡约束由构造满足(式4.27)
-
-    z_tie=(z0, zL) 时对【首末设计高程】做精确锚定: 改扩建方案必须在起终点与既有
-    路网衔接(平面端点已由 build_plane 固定, 故接线点就是实测线首末点)。
-    做法是扣除归一化坡度向量的里程加权均值、再叠加所需均坡 g_req=(zL-z0)/S,
-    使 Σg·ds ≡ zL-z0 恒等成立; 波动幅度按 lam 缩放以【仍由构造保证】|g|≤grade_max,
-    且在无需缩放时取 lam=1, 从而实测基准 M-A 被逐段精确复现。
-
-    不锚定时端点高程自由: 优化器会把全线整体下倾(燃油模型 max(HPex,0) 下坡不
-    回收, 净下坡等于白拿油耗), 实测到起点填高 20 m(顶满 START_AMP_M)、终点深挖
-    30 m 的不可接线纵断面, 故默认口径应传入 z_tie。
+    首末高程均不锚定: 起点由 prof_norm[0] 决定, 终点由各段纵坡积分自然得到。
+    该自由端点口径与消融、多算法对比和敏感性分析保持一致。
     """
     ds = np.asarray(ds_ctrl, float)
-    if z_tie is None:
-        z0 = gz_ctrl[0] + (float(prof_norm[0]) - 0.5) * 2.0 * START_AMP_M
-        g = (np.asarray(prof_norm[1:], float) - 0.5) * 2.0 * grade_max
-        return np.concatenate([[z0], z0 + np.cumsum(g * ds)])
-
-    z0, zL = float(z_tie[0]), float(z_tie[1])
-    S = float(ds.sum())
-    g_req = (zL - z0) / S                       # 满足端点锚定所需的里程加权均坡
-    h = (np.asarray(prof_norm[1:], float) - 0.5) * 2.0      # ∈[-1,1]
-    hbar = float((h * ds).sum() / S)            # 里程加权均值 -> 扣除后净高差为 0
-    dh = h - hbar
-    m = float(np.max(np.abs(dh))) if dh.size else 0.0
-    room = grade_max - abs(g_req)               # 叠加 g_req 后留给波动的坡度余量
-    lam = 1.0 if m * grade_max <= room else max(0.0, room / (m * grade_max))
-    g = g_req + lam * dh * grade_max            # Σg·ds = g_req·S = zL-z0, |g|≤grade_max
-    z = np.concatenate([[z0], z0 + np.cumsum(g * ds)])
-    z[-1] = zL                                  # 消除累加浮点残差
-    return z
+    z0 = gz_ctrl[0] + (float(prof_norm[0]) - 0.5) * 2.0 * START_AMP_M
+    g = (np.asarray(prof_norm[1:], float) - 0.5) * 2.0 * grade_max
+    return np.concatenate([[z0], z0 + np.cumsum(g * ds)])
 
 
 def build_plane(pc, delta):
@@ -405,11 +374,9 @@ def decode_joint(x, pc):
     gz_ctrl = dem.ground_elev_xy(x_ctrl, y_ctrl, pc["lat0"], pc["lon0"],
                                  natural=True)
     ds_ctrl = np.diff(sta_ctrl)
-    # 端点锚定: 首末设计高程 = 实测路面高程(既有路网接线高程)。平面端点已由
-    # build_plane 固定, 故所有候选线位的接线点与实测线首末点是同一物理位置。
-    z_tie = (float(pc["gz_meas"][0]), float(pc["gz_meas"][-1]))
+    # 最终口径不锚定纵断面首末高程: 起点偏移和各段纵坡均参与优化。
     design_z_ctrl = profile_from_grades(x[N_MODE:], gz_ctrl, ds_ctrl,
-                                        LONG_STD_100["grade_max"], z_tie=z_tie)
+                                        LONG_STD_100["grade_max"])
     design_z = np.interp(sta, sta_ctrl, design_z_ctrl)
 
     # 各评价坡段的平曲线半径: 曲率沿弧长插值到评价桩号, 再取相邻桩号曲率均值,
@@ -419,27 +386,13 @@ def decode_joint(x, pc):
     kappa_seg = 0.5 * (kappa_sta[:-1] + kappa_sta[1:])
     R_seg = 1.0 / np.maximum(kappa_seg, 1e-12)
 
-    # 建筑密度分区(V1 = 方案A; 详见 building_mask.py 与 data 分支文档 §2.8):
-    #   depth2 用双线性插值 -> 惩罚项对平面偏移连续可微, IJS 才有逃离禁区的方向;
-    #   tier1/tier2 布尔量仅用于长度诊断, 最近邻即可。
-    dep2 = building_mask.depth2_at_xy(x_sta, y_sta)
-    t1 = building_mask.tier1_at_xy(x_sta, y_sta)
-    t2 = dep2 > 0.0
-    dL_dense = np.diff(sta)          # 段中点平均, 与 L_eco_km 同一惯用法
-    L_dense1_km = float(np.sum(
-        0.5 * (t1[:-1].astype(float) + t1[1:].astype(float)) * dL_dense)) / 1000.0
-    L_dense2_km = float(np.sum(
-        0.5 * (t2[:-1].astype(float) + t2[1:].astype(float)) * dL_dense)) / 1000.0
-
     return dict(xx=xx, yy=yy, L_new=L_new, R=R, R_seg=R_seg, sta=sta,
                 gz_new=gz_new, design_z=design_z,
                 sta_ctrl=sta_ctrl, gz_ctrl=gz_ctrl,
                 design_z_ctrl=design_z_ctrl,
                 eco=eco, ic=ic, exempt=exempt, L_eco_km=L_eco_km,
                 cross=cross, cross_keep=keep, bridge_iv=bridge_iv,
-                bridge=bridge, L_cross_km=L_cross_m / 1000.0,
-                dep2=dep2, t1=t1, t2=t2,
-                L_dense1_km=L_dense1_km, L_dense2_km=L_dense2_km)
+                bridge=bridge, L_cross_km=L_cross_m / 1000.0)
 
 
 def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
@@ -544,22 +497,9 @@ def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
         rel_S = np.maximum(0.0, (th_min - cr["theta"][kp]) / th_min)
         pen += pen_scale * PENALTY["k_skew"] * (rel_S.mean() + rel_S.max())
 
-    # 建筑密度 Tier2 严格禁行(硬约束, data 分支文档 §2.8)。
-    # 用【禁区内深度】而非布尔掩膜: 布尔量在禁区内部梯度恒为 0, IJS 感受不到逃离方向;
-    # 深度场处处指向最近边界。归一化后与既有惩罚同量级。
-    # 注: Tier1 的软抑制【绝不能】加到 pen —— run_joint 的可行性门控是 pen<=1e-6,
-    # 任何非零惩罚都会剔除候选, 若 Tier1 进 pen 则退化为硬约束, 而现状线位 M-A 自身
-    # 就有 2.00 km 落在 Tier1, "允许在一定范围内穿越"的设计目标会被静默摧毁。
-    rel_D2 = np.minimum(d["dep2"] / DENSITY["depth_ref_m"], DENSITY["rel_D2_clip"])
-    if DENSITY_ON:
-        pen = pen + pen_scale * DENSITY["k_forbid"] * (rel_D2.mean() + rel_D2.max())
-
     ic_seg = 0.5 * (d["ic"][:-1].astype(float) + d["ic"][1:].astype(float))
     L_ic_km = float(np.sum(ic_seg * np.diff(sta))) / 1000.0
     L_km_new = L_new / 1000.0
-    # Tier1 软代价: 穿越可穿越带的里程占比。走 info 而非 pen(见上文说明),
-    # 由 make_scalar_joint 以 DENSITY["w_dense1"] 加权计入标量目标。
-    soft_dense1 = d["L_dense1_km"] / max(L_km_new, 1e-9)
     info = dict(C_PING=C_PING, C_TU=C_TU, E_fuel=E_fuel, E_ele=E_ele,
                 Vs=Vs, Vh=Vh, ml=ml, kwh=kwh, L_km=L_km_new,
                 Rmin=float(R.min()),
@@ -570,20 +510,16 @@ def objectives_joint(x, pc, pen_scale=1.0, scenario=None):
                 ramp_cost=float(pc["ramp_cost"]),
                 L_bridge_new=ew["L_bridge_new_km"],
                 L_tunnel_new=ew["L_tunnel_new_km"],
-                L_dense1_km=d["L_dense1_km"], L_dense2_km=d["L_dense2_km"],
-                soft_dense1=soft_dense1,
-                dense_depth_max=float(d["dep2"].max()), **cinfo)
+                **cinfo)
     return C, E, pen, info
 
 
 def make_scalar_joint(pc, wC, wE, C_ref, E_ref, pen_scale=1.0, scenario=None):
     """标量化联合目标 F = wC·Cnorm + wE·Enorm + 惩罚(已与 F 同尺度)。"""
     def f(x):
-        C, E, pen, info = objectives_joint(x, pc, pen_scale=pen_scale,
-                                           scenario=scenario)
-        # Tier1 软抑制: 可穿越但不鼓励, 与 C/E 同台权衡(不进 pen, 故不影响可行性门控)
-        soft = DENSITY["w_dense1"] * info["soft_dense1"] if DENSITY_ON else 0.0
-        return (wC * (C / C_ref) + wE * (E / E_ref) + pen + soft)
+        C, E, pen, _ = objectives_joint(x, pc, pen_scale=pen_scale,
+                                        scenario=scenario)
+        return wC * (C / C_ref) + wE * (E / E_ref) + pen
     return f
 
 
@@ -681,11 +617,8 @@ def plane_lcc(L_m, L_eco_km=0.0, L_cross_km=None, ramp_cost=0.0):
 
 
 def make_scalar_plane(pc, C_ref_plane, pen_scale=1.0):
-    """第一阶段平面标量目标: min 平面LCC(交叉桥+生态隧道内生) + 平曲线半径惩罚(R>=400m)
-    + 建筑密度约束(Tier2 硬罚入 pen、Tier1 软抑制加到目标, 与联合口径一致)。
-
-    注: 若此处不含密度约束, Stage 1 可能冻结一条落入 Tier2 禁区的平面, Stage 2 只搜
-    纵断面无法逃出, 导致两阶段方案带隐藏的 pen>0 且与联合方案对比失真。故必须同口径。
+    """第一阶段平面标量目标: min 平面LCC(交叉桥+生态隧道内生)
+    + 平曲线半径惩罚(R>=400m)。建筑密度不进入目标或约束。
     """
     import crossings as _cr
     Rmin_req = FLAT_STD_100["R_extreme_m"]
@@ -704,16 +637,7 @@ def make_scalar_plane(pc, C_ref_plane, pen_scale=1.0):
             if len(cross["s"]) else np.zeros(0, dtype=bool)
         _, L_cross_m = _cr.bridge_intervals(cross, keep=keep)
         vio_R = np.maximum(0.0, (Rmin_req - R) / Rmin_req).mean()
-        # 建筑密度约束(沿密集平面点, 与 objectives_joint 同口径):
-        dep2 = building_mask.depth2_at_xy(xx, yy)
-        rel_D2 = np.minimum(dep2 / DENSITY["depth_ref_m"], DENSITY["rel_D2_clip"])
-        pen_D2 = pen_scale * DENSITY["k_forbid"] * (rel_D2.mean() + rel_D2.max())
-        t1 = building_mask.tier1_at_xy(xx, yy)
-        t1_seg = 0.5 * (t1[:-1].astype(float) + t1[1:].astype(float))
-        L_dense1_km = float(np.sum(t1_seg * seg)) / 1000.0
-        soft_dense1 = L_dense1_km / max(L_new / 1000.0, 1e-9)
-        dens = (pen_D2 + DENSITY["w_dense1"] * soft_dense1) if DENSITY_ON else 0.0
         return plane_lcc(L_new, L_eco_km, L_cross_km=L_cross_m / 1000.0,
                          ramp_cost=pc["ramp_cost"]) / C_ref_plane \
-            + pen_scale * PENALTY["k_R"] * vio_R + dens
+            + pen_scale * PENALTY["k_R"] * vio_R
     return f

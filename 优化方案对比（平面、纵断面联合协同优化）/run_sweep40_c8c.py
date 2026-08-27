@@ -2,17 +2,18 @@
 """
 run_sweep40_c8c.py — 图C8c: 仿论文图6.7 款式的 Pareto 解集(40 权重点, 本文口径)
 
-协议与主实验 run_joint.py 完全一致(可引用):
+协议与最终主实验 run_joint.py 完全一致(可引用):
   同一初始种群(joint_baseline, seed=2025, 现状解注入首位)、同一组熵权参考
   (wC/wE/C_ref/E_ref)、同一寻优管线(run_ijs_two_phase, pop=200, iter=1000,
-  软/硬罚 0.3/3.0); 仅把权重扫描从 21 点加密到 40 点(w1 ∈ linspace(0,1,40))。
+  软/硬罚 0.3/3.0)、自由纵断面端点、无建筑密度约束、OSM交叉桥内生;
+  仅把权重扫描从 21 点加密到 40 点(w1 ∈ linspace(0,1,40))。
 
 图C8c 款式仿论文图6.7: 红色星号散点、横轴能耗 E、纵轴全生命周期成本 C,
 无辅助线; 图注注明本文口径(官方2025造价), 数值范围与论文图6.7 的差异
 归因见《待办清单2》问题20(论文图轴单位矛盾+造价失真, 不做数字对齐)。
 
 用法: python3 run_sweep40_c8c.py [--workers 30]
-结果缓存 results/sweep40_c8c.json, 已存在则直接出图。
+结果缓存 results/sweep40_c8c_w500_nodens_freeend.json, 已存在则直接出图。
 """
 import os, json, time, argparse, multiprocessing as mp
 for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
@@ -21,7 +22,7 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RES_FN = os.path.join(HERE, "results", "sweep40_c8c.json")
+RES_FN = os.path.join(HERE, "results", "sweep40_c8c_w500_nodens_freeend.json")
 FIG = os.path.join(HERE, "figures")
 C_YI = 1e8
 N_W = 40
@@ -33,6 +34,8 @@ def _init_worker():
     """worker 进程一次性构建 pc 与共享的 (base, wC, wE, C_ref, E_ref)。"""
     global _CTX
     from data_loader import load_alignment
+    import objective_joint as OJ
+    OJ.set_corridor(500.0)
     from objective_joint import make_plane_context, joint_baseline, DIM
     from run_joint import make_existing_x
     align = load_alignment()
@@ -68,8 +71,11 @@ def run_sweep(workers):
     with mp.Pool(min(workers, N_W), initializer=_init_worker) as pool:
         recs = pool.map(_one, jobs)
     out = dict(meta=dict(n_weights=N_W, pop=200, max_iter=1000,
+                         corridor_half_w=500.0, density_on=False,
+                         profile_endpoints_fixed=False,
                          protocol="run_ijs_two_phase soft0.3/hard3.0, "
-                                  "joint_baseline seed2025+现状注入, 交叉桥内生口径",
+                                  "joint_baseline seed2025+现状注入, 自由纵断面端点, "
+                                  "无建筑密度约束, OSM交叉桥内生口径",
                          minutes=round((time.time() - t0) / 60, 1)),
                sweep=recs)
     with open(RES_FN, "w", encoding="utf-8") as f:
@@ -116,7 +122,7 @@ if __name__ == "__main__":
     if os.path.exists(RES_FN):
         with open(RES_FN, encoding="utf-8") as f:
             d = json.load(f)
-        print("[缓存] 使用已有 sweep40_c8c.json")
+        print(f"[缓存] 使用已有 {os.path.basename(RES_FN)}")
     else:
         d = run_sweep(a.workers)
     plot(d)

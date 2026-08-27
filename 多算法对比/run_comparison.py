@@ -2,7 +2,7 @@
 """
 run_comparison.py — 多算法对比主程序 (实验设计方案2 · 实验二, 2026-08-12 升级)
 
-【PJ1-PJ6 平纵联合规模阶梯】(待办清单2 问题19, 替代旧版 P1-P6 纯纵断面口径)
+【PJ1-PJ6 平纵联合规模阶梯】(待办清单2 问题19)
   在与主实验完全相同的【平纵联合】模型(objective_joint: 平面50正弦模态+纵断面
   变坡点, 准天然地面DEM, 交叉桥内生触发+生态隧道内生, ±500m 走廊带)上, 以
   【纵断面变坡点步长】生成规模阶梯(平面模态数固定50, 避免双变量混淆):
@@ -11,18 +11,25 @@ run_comparison.py — 多算法对比主程序 (实验设计方案2 · 实验二
     PJ4 200m(≈162)    PJ5 100m(=275, 主实验口径)  PJ6 50m(≈499)
 
   对比算法: IJS(本文) / JS(原型) / NSGA-II(学位论文原算法) / GA / PSO / GWO,
-  每算法每规模 10 次独立运行(联合求值成本高, 减种子数并声明), pop=200, iter=500
-  (NFE 与主实验对齐; IJS 因 Levy/DE 阶段每代 3×NFE, 见 NFE_MULT 列声明)。
+  每算法每规模 30 次独立运行, pop=200, iter=500
+  (IJS因Levy/DE阶段每代约3×NFE；图B1按共同累计NFE预算比较并明确截断)。
   惩罚采用单一 pen_scale=1.0(所有算法同一目标函数, 保证公平; 不用主实验的
   两阶段软硬调度, 因其为 IJS 专用管线)。
 
-【并行粒度: 按 (规模, 算法) 并行, 单元内部串行】
-  36 个 (规模,算法) 单元各占一个单核进程(BLAS 单线程), 单元内 10 次独立运行
+  每个 PJ 规模另做 30 次独立 Pareto 质量评估: 每次运行中
+  IJS/JS/GA/PSO/GWO 采用 21 点权重扫描(wC=0.1..0.9)，NSGA-II 采用原生
+  双目标第一前沿；由全部算法、全部30次前沿的并集构造统一参考前沿与HV参考点，
+  对每次独立运行分别计算 HV / IGD / Spacing。
+
+【并行粒度: 标量按(规模,算法)，Pareto按(规模,算法,运行序号)】
+  36 个 (规模,算法) 单元各占一个单核进程(BLAS 单线程), 单元内 30 次独立运行
   串行执行; 运行时间在同构单核条件下测得, 算法间耗时可比(声明测时口径)。
   每次运行的初始种群与种子由 (run 序号) 唯一确定, 与执行顺序无关。
+  Pareto共6×6×30个独立单元；同一运行序号、同一权重点下各标量算法共享种子
+  与初始种群，NSGA-II在每个运行序号独立运行一次。
 
 用法:
-  python3 run_comparison.py                 # 正式全量 (6规模×6算法×10次)
+  python3 run_comparison.py                 # 正式全量 (6规模×6算法×30次+Pareto)
   python3 run_comparison.py --smoke         # 冒烟 (iter=5, 2次, PJ1/PJ6)
   python3 run_comparison.py --workers 30    # 限制并发进程数(CPU 预算)
 """
@@ -37,7 +44,9 @@ from params import ALGO
 from data_loader import load_alignment
 from algorithms import run, VARIANTS
 from benchmarks import run_GA, run_PSO, run_GWO, run_NSGA2
-from metrics import wilcoxon_ranksum, friedman_ranks
+from metrics import (hypervolume_2d, igd, spacing, build_reference_front,
+                     nondominated, wilcoxon_signedrank, holm_adjust,
+                     friedman_ranks)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.path.join(HERE, "results")
@@ -53,7 +62,13 @@ SCALES = {
     "PJ6": dict(step_m=50.0,  label="PJ6 (profile step 50 m)"),
 }
 ALGOS = ["IJS", "JS", "NSGA-II", "GA", "PSO", "GWO"]
-N_RUNS_PJ = 10       # 联合求值成本高, 每单元 10 种子(声明)
+N_RUNS_PJ = 30
+PARETO_WEIGHTS = np.linspace(0.1, 0.9, 21)
+SCALAR_SEED_BASE = 1000
+PARETO_SEED_BASE = 20000
+PARETO_RUN_STRIDE = 1000
+NFE_PER_ITER = {"IJS": 3, "JS": 1, "NSGA-II": 1,
+                "GA": 1, "PSO": 1, "GWO": 1}
 
 _PC = None           # worker 内缓存的平面上下文
 
@@ -93,6 +108,17 @@ def convergence_gen(curve, frac=0.99):
     return int(below[0]) if len(below) else len(curve) - 1
 
 
+def convergence_nfe_axis(algo, pop_size, max_iter):
+    """各算法收敛曲线采样点对应的累计NFE；IJS含一次Tent初始化。"""
+    initial = pop_size * (2 if algo == "IJS" else 1)
+    return (initial + np.arange(max_iter + 1) * pop_size * NFE_PER_ITER[algo])
+
+
+def pareto_seed(run_idx, weight_idx=0):
+    """同一Pareto运行、同一权重点在不同标量算法间共享的确定性种子。"""
+    return PARETO_SEED_BASE + run_idx * PARETO_RUN_STRIDE + weight_idx
+
+
 def run_one_scalar(algo, f, lb, ub, pop0, max_iter, seed):
     t0 = time.time()
     if algo == "IJS":
@@ -123,28 +149,29 @@ def run_unit(job):
     best_fs, conv_gens, runtimes = [], [], []
     curves, feas = [], []
     for r in range(n_runs):
-        rng = np.random.default_rng(1000 + r)
+        seed = SCALAR_SEED_BASE + r
+        rng = np.random.default_rng(seed)
         pop0 = rng.random((pop_size, dim))
         if algo == "NSGA-II":
             fbi = make_biobj_joint_fn(step_m, C_ref, E_ref)
             t0 = time.time()
-            rn = run_NSGA2(fbi, lb, ub, pop0, max_iter, 1000 + r)
+            rn = run_NSGA2(fbi, lb, ub, pop0, max_iter, seed,
+                           scalar_weights=(wC, wE))
             rt = time.time() - t0
             fr = rn["front_F"]
             scal = wC * fr[:, 0] + wE * fr[:, 1]
             bi = int(np.argmin(scal))
             bf = float(scal[bi])
             bx = rn["front_X"][bi] if "front_X" in rn else None
-            best_fs.append(bf); conv_gens.append(max_iter); runtimes.append(rt)
-            curves.append(None)
+            curve = rn["curve"]
         else:
             f = make_scalar_joint_fn(step_m, wC, wE, C_ref, E_ref)
             bf, curve, rt, bx = run_one_scalar(algo, f, lb, ub, pop0,
-                                               max_iter, 1000 + r)
-            best_fs.append(bf)
-            conv_gens.append(convergence_gen(curve))
-            runtimes.append(rt)
-            curves.append(curve)
+                                               max_iter, seed)
+        best_fs.append(bf)
+        conv_gens.append(convergence_gen(curve))
+        runtimes.append(rt)
+        curves.append(np.asarray(curve, dtype=float))
         # 可行性(pen==0)与进入可行域代数(问题19 加分项: 两段收敛报告)
         if bx is not None:
             C, E, pen, info = OJ.objectives_joint(np.asarray(bx), pc)
@@ -154,21 +181,122 @@ def run_unit(job):
         else:
             feas.append(None)
     best_fs = np.array(best_fs)
-    med_idx = int(np.argsort(best_fs)[len(best_fs) // 2])
-    med_curve = curves[med_idx]
     unit = dict(
         best=float(best_fs.min()), mean=float(best_fs.mean()),
-        std=float(best_fs.std()), median=float(np.median(best_fs)),
+        std=float(best_fs.std(ddof=1)) if len(best_fs) > 1 else 0.0,
+        median=float(np.median(best_fs)),
         conv_gen_mean=float(np.mean(conv_gens)),
         runtime_mean=float(np.mean(runtimes)),
         best_fs=best_fs.tolist(),
         runtimes=list(map(float, runtimes)),
         feas=feas,
-        curve=(None if med_curve is None else np.asarray(med_curve).tolist()))
+        curves=[curve.tolist() for curve in curves],
+        nfe_axis=convergence_nfe_axis(algo, pop_size, max_iter).tolist())
     print(f"  [{sk}][{algo:8s}] best={best_fs.min():.4f} "
-          f"mean={best_fs.mean():.4f} std={best_fs.std():.4f} "
+          f"mean={best_fs.mean():.4f} "
+          f"std={best_fs.std(ddof=1) if len(best_fs) > 1 else 0.0:.4f} "
           f"t={np.mean(runtimes):.1f}s", flush=True)
     return sk, algo, unit
+
+
+def run_pareto_unit(job):
+    """
+    单个 (规模, 算法, 独立运行序号) 的 Pareto 前沿计算。
+
+    标量算法以 21 个权重分别求折中解；各权重使用不同种子，但同一权重下
+    五种标量算法共享初始种群和种子。NSGA-II直接输出原生双目标第一前沿。
+    返回的目标均为含统一约束惩罚的 (C/C_ref, E/E_ref) 最小化口径。
+    """
+    (sk, algo, step_m, C_ref, E_ref,
+     pop_size, max_iter, weights, run_idx) = job
+    OJ, _ = _ctx(step_m)
+    dim = OJ.DIM
+    lb, ub = np.zeros(dim), np.ones(dim)
+    fbi = make_biobj_joint_fn(step_m, C_ref, E_ref)
+
+    if algo == "NSGA-II":
+        seed = pareto_seed(run_idx)
+        pop0 = np.random.default_rng(seed).random((pop_size, dim))
+        rn = run_NSGA2(fbi, lb, ub, pop0, max_iter, seed)
+        front = nondominated(rn["front_F"])
+    else:
+        points = []
+        for idx, wC in enumerate(weights):
+            seed = pareto_seed(run_idx, idx)
+            pop0 = np.random.default_rng(seed).random((pop_size, dim))
+            f = make_scalar_joint_fn(step_m, float(wC), float(1.0 - wC),
+                                     C_ref, E_ref)
+            _, _, _, bx = run_one_scalar(algo, f, lb, ub, pop0,
+                                         max_iter, seed)
+            points.append(fbi(np.asarray(bx)))
+        front = nondominated(np.asarray(points, float))
+
+    print(f"  [{sk}][{algo:8s}][Pareto run {run_idx + 1:02d}] "
+          f"{len(front)} points", flush=True)
+    return sk, algo, run_idx, front.tolist()
+
+
+def pareto_quality(front_runs):
+    """
+    用全部算法、全部独立运行的并集建立统一参考前沿和HV参考点，随后对每个
+    独立运行分别计算HV/IGD/Spacing，返回30次样本、汇总量及配对检验。
+    """
+    arrays = {
+        algo: [nondominated(np.asarray(front, float)) for front in front_runs[algo]]
+        for algo in ALGOS
+    }
+    all_fronts = [front for runs in arrays.values() for front in runs if len(front)]
+    if not all_fronts:
+        raise ValueError("Pareto质量评估没有可用前沿")
+    ref_front = build_reference_front(all_fronts)
+    all_points = np.vstack(all_fronts)
+    maxima = all_points.max(axis=0)
+    spans = np.ptp(all_points, axis=0)
+    margin = np.maximum(0.05 * spans, 0.05 * np.maximum(np.abs(maxima), 1.0))
+    ref_point = maxima + margin
+
+    metrics = {}
+    pooled_fronts = {}
+    for algo, runs in arrays.items():
+        hv_values = [float(hypervolume_2d(front, ref_point)) for front in runs]
+        igd_values = [float(igd(front, ref_front)) for front in runs]
+        spacing_values = [float(spacing(front)) for front in runs]
+        n_points = [int(len(front)) for front in runs]
+        pooled = nondominated(np.vstack([front for front in runs if len(front)]))
+        pooled_fronts[algo] = pooled.tolist()
+
+        def summary(values, name):
+            values = np.asarray(values, dtype=float)
+            return {
+                name: values.tolist(),
+                f"{name}_mean": float(np.mean(values)),
+                f"{name}_std": float(np.std(values, ddof=1)) if len(values) > 1 else 0.0,
+                f"{name}_median": float(np.median(values)),
+                f"{name}_q25": float(np.quantile(values, 0.25)),
+                f"{name}_q75": float(np.quantile(values, 0.75)),
+            }
+
+        metrics[algo] = dict(
+            **summary(hv_values, "HV"),
+            **summary(igd_values, "IGD"),
+            **summary(spacing_values, "Spacing"),
+            n_points=n_points,
+            n_points_mean=float(np.mean(n_points)),
+            pooled_n_points=int(len(pooled)),
+        )
+
+    metric_stats = {}
+    for metric in ("HV", "IGD", "Spacing"):
+        raw = {
+            algo: wilcoxon_signedrank(metrics["IJS"][metric], metrics[algo][metric])
+            for algo in ALGOS if algo != "IJS"
+        }
+        metric_stats[metric] = {
+            "paired_wilcoxon_vs_IJS": raw,
+            "holm_adjusted_p": holm_adjust(raw),
+        }
+    return (metrics, pooled_fronts, ref_front.tolist(), ref_point.tolist(),
+            metric_stats)
 
 
 def main():
@@ -204,8 +332,20 @@ def main():
         CE = [OJ.objectives_joint(base[i], pc)[:2] for i in range(pop_size)]
         C0 = np.array([c for c, _ in CE]); E0 = np.array([e for _, e in CE])
         wC, wE = entropy_weights(C0, E0)
+        total_decision_variables = int(OJ.N_MODE + OJ.M_PROF)
+        if total_decision_variables != int(OJ.DIM):
+            raise RuntimeError(
+                f"{sk}决策变量统计不一致: N_MODE+M_PROF="
+                f"{total_decision_variables}, DIM={OJ.DIM}"
+            )
         scale_meta[sk] = dict(step_m=step, dim=dim,
                               label=SCALES[sk]["label"],
+                              plane_control_points=int(OJ.N_CTRL),
+                              plane_decision_variables=int(OJ.N_MODE),
+                              profile_control_points=int(OJ.M_PROF),
+                              grade_segments=int(max(OJ.M_PROF - 1, 0)),
+                              total_control_points=int(OJ.N_CTRL + OJ.M_PROF),
+                              total_decision_variables=total_decision_variables,
                               wC=float(wC), wE=float(wE),
                               C_ref=float(C0.mean()), E_ref=float(E0.mean()))
         print(f"[规模] {SCALES[sk]['label']} dim={dim} "
@@ -216,11 +356,21 @@ def main():
              scale_meta[sk]["C_ref"], scale_meta[sk]["E_ref"],
              pop_size, max_iter, n_runs)
             for sk in scale_keys for algo in ALGOS]
-    n_workers = min(args.workers, len(jobs))
+    pareto_weights = PARETO_WEIGHTS[::10] if args.smoke else PARETO_WEIGHTS
+    pareto_jobs = [(sk, algo, scale_meta[sk]["step_m"],
+                    scale_meta[sk]["C_ref"], scale_meta[sk]["E_ref"],
+                    pop_size, max_iter, pareto_weights.tolist(), run_idx)
+                   for sk in scale_keys for algo in ALGOS
+                   for run_idx in range(n_runs)]
+    n_workers = min(args.workers, max(len(jobs), len(pareto_jobs)))
     print(f"[执行] {len(jobs)} 个(规模,算法)单元, {n_workers} 进程"
           f"(单元内 {n_runs} 次独立运行串行, 单核测时可比)", flush=True)
     with mp.Pool(n_workers) as pool:
         results = pool.map(run_unit, jobs)
+        print(f"[Pareto] {len(pareto_jobs)} 个(规模,算法,独立运行)单元, "
+              f"每算法每规模 {n_runs} 次；标量算法每次 "
+              f"{len(pareto_weights)} 点权重扫描", flush=True)
+        pareto_results = pool.map(run_pareto_unit, pareto_jobs)
 
     out = dict(meta=dict(pop_size=pop_size, max_iter=max_iter, n_runs=n_runs,
                          total_km=align["total_km"], algos=ALGOS,
@@ -228,22 +378,58 @@ def main():
                          n_mode=OJ.N_MODE, corridor_half_w=OJ.CORRIDOR_HALF_W,
                          smoke=bool(args.smoke), n_workers=n_workers,
                          pen_scale=1.0,
-                         execution="按(规模,算法)并行、单元内部串行(单核, 测时可比); "
-                                   "平纵联合口径(问题19), 交叉桥内生(问题21)"),
-               scales={sk: dict(**scale_meta[sk], algos={}, curves={})
+                         run_seeds=list(range(SCALAR_SEED_BASE,
+                                              SCALAR_SEED_BASE + n_runs)),
+                         nfe_per_iteration=NFE_PER_ITER,
+                         pareto_weights=pareto_weights.tolist(),
+                         pareto_n_runs=n_runs,
+                         pareto_seed_base=PARETO_SEED_BASE,
+                         pareto_run_base_seeds=[pareto_seed(r) for r in range(n_runs)],
+                         pareto_protocol=(
+                             f"每算法每规模{n_runs}次独立Pareto运行；标量算法每次"
+                             f"按{len(pareto_weights)}点权重扫描，NSGA-II每次取原生"
+                             "第一前沿；全部算法和全部运行共用统一参考前沿及HV参考点"
+                         ),
+                         execution="标量按(规模,算法)并行且单元内串行测时；Pareto按"
+                                   "(规模,算法,运行序号)并行；平纵联合口径(问题19), "
+                                   "交叉桥内生(问题21)"),
+               scales={sk: dict(**scale_meta[sk], algos={}, curves={},
+                                nfe_axes={}, pareto_front_runs={
+                                    algo: [None] * n_runs for algo in ALGOS
+                                })
                        for sk in scale_keys})
     for sk, algo, unit in results:
-        curve = unit.pop("curve")
+        curves = unit.pop("curves")
+        nfe_axis = unit.pop("nfe_axis")
         out["scales"][sk]["algos"][algo] = unit
-        if curve is not None:
-            out["scales"][sk]["curves"][algo] = curve
+        out["scales"][sk]["curves"][algo] = curves
+        out["scales"][sk]["nfe_axes"][algo] = nfe_axis
 
-    # ---- 统计检验: Wilcoxon(IJS vs 其它) + Friedman(每规模) ----
+    for sk, algo, run_idx, front in pareto_results:
+        out["scales"][sk]["pareto_front_runs"][algo][run_idx] = front
+    for sk in scale_keys:
+        front_runs = out["scales"][sk]["pareto_front_runs"]
+        missing = [(algo, r) for algo in ALGOS for r, front in enumerate(front_runs[algo])
+                   if front is None]
+        if missing:
+            raise RuntimeError(f"{sk}缺少Pareto独立运行结果: {missing[:5]}")
+        metrics, pooled_fronts, ref_front, ref_point, pareto_stats = pareto_quality(
+            front_runs)
+        out["scales"][sk]["pareto_metrics"] = metrics
+        out["scales"][sk]["pareto_metric_stats"] = pareto_stats
+        out["scales"][sk]["fronts"] = pooled_fronts
+        out["scales"][sk]["reference_front"] = ref_front
+        out["scales"][sk]["ref_point"] = ref_point
+
+    # ---- 统计检验: 配对Wilcoxon(IJS vs 其它, Holm校正) + Friedman(每规模) ----
     for sk in scale_keys:
         F = {a: out["scales"][sk]["algos"][a]["best_fs"] for a in ALGOS}
-        wil = {a: wilcoxon_ranksum(F["IJS"], F[a]) for a in ALGOS if a != "IJS"}
+        wil = {a: wilcoxon_signedrank(F["IJS"], F[a])
+               for a in ALGOS if a != "IJS"}
         chi2, fp, avg_rank = friedman_ranks(F)
-        out["scales"][sk]["stats"] = dict(wilcoxon_vs_IJS=wil,
+        out["scales"][sk]["stats"] = dict(
+                                          paired_wilcoxon_vs_IJS=wil,
+                                          holm_adjusted_p_vs_IJS=holm_adjust(wil),
                                           friedman_chi2=chi2, friedman_p=fp,
                                           friedman_avg_rank=avg_rank)
 

@@ -30,7 +30,7 @@ run_twostage.py — 两阶段(先平面, 后纵断面)优化【对照】程序
 import os, json, time, argparse
 import numpy as np
 
-from params import ALGO, DENSITY
+from params import ALGO
 from data_loader import load_alignment
 from algorithms import run, VARIANTS
 import objective_joint as OJ
@@ -54,7 +54,7 @@ def _load_joint_reference(path, smoke):
     """Load and validate the exact joint result that defines this control run."""
     if not os.path.isfile(path):
         raise FileNotFoundError(
-            f"Missing joint result {path}; run the fixed-endpoint W500 joint experiment first")
+            f"Missing joint result {path}; run the free-endpoint W500 joint experiment first")
     with open(path, encoding="utf-8") as fp:
         data = json.load(fp)
     provenance = data.get("provenance", {})
@@ -103,8 +103,6 @@ def main():
     ap.add_argument("--smoke", action="store_true", help="冒烟测试(iter=5)")
     ap.add_argument("--corridor", type=float, default=None,
                     help="走廊带半宽 m(默认沿用模块设置 500)")
-    ap.add_argument("--no-density", action="store_true",
-                    help="关闭建筑密度约束(A/B 对照用)")
     ap.add_argument("--joint-result", default=None,
                     help="绑定的联合主结果；默认按smoke/W500当前口径选择")
     ap.add_argument("--fresh", action="store_true",
@@ -117,23 +115,22 @@ def main():
     # 走廊带必须在 make_plane_context 之前设置(影响模态幅值)
     if args.corridor is not None:
         OJ.set_corridor(args.corridor)
-    OJ.set_density(not args.no_density)
-
     if args.smoke:
         result_name = "twostage_results_smoke.json"
         default_joint_name = "joint_results_smoke.json"
     else:
-        density_tag = "dens" if OJ.DENSITY_ON else "nodens"
-        result_name = f"twostage_results_w{int(OJ.CORRIDOR_HALF_W)}_{density_tag}.json"
-        default_joint_name = f"joint_results_w{int(OJ.CORRIDOR_HALF_W)}_{density_tag}.json"
+        result_name = f"twostage_results_w{int(OJ.CORRIDOR_HALF_W)}_nodens.json"
+        default_joint_name = f"joint_results_w{int(OJ.CORRIDOR_HALF_W)}_nodens.json"
     result_path = os.path.join(RESULTS, result_name)
     partial_path = result_path.replace(".json", ".partial.json")
     joint_path = os.path.abspath(args.joint_result or os.path.join(RESULTS, default_joint_name))
     joint_result, joint_result_sha256 = _load_joint_reference(joint_path, args.smoke)
     joint_config = joint_result["provenance"]["config"]
     if (float(joint_config.get("corridor_half_w", -1)) != float(OJ.CORRIDOR_HALF_W) or
-            joint_config.get("density_on") is not bool(OJ.DENSITY_ON)):
-        raise RuntimeError("Joint reference corridor/density configuration does not match")
+            joint_config.get("density_on") is not False or
+            joint_config.get("profile_endpoints_fixed") is not False):
+        raise RuntimeError(
+            "Joint reference corridor/density/profile-endpoint configuration does not match")
 
     t0 = time.time()
     align = load_alignment()
@@ -143,7 +140,7 @@ def main():
     print(f"[两阶段对照] dim={dim} (平面模态{N_MODE} + "
           f"纵断面{M_PROF}@{STEP_PROFILE_M:.0f}m), "
           f"走廊带±{OJ.CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}, "
-          f"密度约束={'ON' if OJ.DENSITY_ON else 'OFF'}")
+          "纵断面首末端自由, 建筑密度不进入约束")
 
     # ---------- M-A 现状方案 ----------
     x_A = make_existing_x(pc, dim)
@@ -174,12 +171,14 @@ def main():
     files = _file_manifest()
     files[os.path.relpath(__file__, os.path.dirname(HERE))] = _sha256_file(__file__)
     config = dict(
-        schema="two-stage-resume-v1", repository_head=_git_head(),
+        schema="two-stage-resume-v2", repository_head=_git_head(),
         joint_result=os.path.relpath(joint_path, os.path.dirname(HERE)),
         joint_result_sha256=joint_result_sha256,
         joint_config_fingerprint=joint_result["provenance"]["config_fingerprint"],
         corridor_half_w=float(OJ.CORRIDOR_HALF_W),
-        density_on=bool(OJ.DENSITY_ON), smoke=bool(args.smoke),
+        density_on=False,
+        profile_endpoints_fixed=bool(OJ.PROFILE_ENDPOINTS_FIXED),
+        smoke=bool(args.smoke),
         dim=int(dim), n_mode=int(N_MODE), M_prof=int(M_PROF),
         pop_size=int(POP_SIZE), max_iter_each_stage=int(MAX_ITER),
         stage1_seed=1000, stage2_seed=2000,
@@ -234,9 +233,8 @@ def main():
 
     def make_prof_f(ps):
         def f(prof_norm):
-            C, E, pen, info = objectives_joint(full_x(prof_norm), pc, pen_scale=ps)
-            soft = DENSITY["w_dense1"] * info["soft_dense1"] if OJ.DENSITY_ON else 0.0
-            return wC * (C / C_ref) + wE * (E / E_ref) + pen + soft
+            C, E, pen, _ = objectives_joint(full_x(prof_norm), pc, pen_scale=ps)
+            return wC * (C / C_ref) + wE * (E / E_ref) + pen
         return f
 
     if "stage2" not in solved:
@@ -266,7 +264,8 @@ def main():
         meta=dict(dim=dim, n_mode=N_MODE, M_prof=M_PROF,
                   step_plane_m=STEP_PLANE_M, step_profile_m=STEP_PROFILE_M,
                   corridor_half_w=OJ.CORRIDOR_HALF_W, pop_size=POP_SIZE,
-                  density_on=bool(OJ.DENSITY_ON),
+                  density_on=False,
+                  profile_endpoints_fixed=bool(OJ.PROFILE_ENDPOINTS_FIXED),
                   max_iter=MAX_ITER, wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
                   total_km=align["total_km"], Rmin_req=400,
                   smoke=bool(args.smoke),

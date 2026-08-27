@@ -4,6 +4,7 @@ set -u
 cd "$(dirname "$0")"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
        NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
+# 最终口径：纵断面首末端自由、无建筑密度约束、保留 OSM 交叉桥内生触发。
 echo "[$(date '+%F %T')] run_joint 开始"
 python3 -u run_joint.py --workers 23 > run_joint_p21.log 2>&1 || { echo "run_joint FAIL"; exit 1; }
 echo "[$(date '+%F %T')] run_twostage 开始"

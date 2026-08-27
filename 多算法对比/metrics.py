@@ -6,7 +6,7 @@ metrics.py — Pareto 前沿质量指标(HV/IGD/Spacing)与统计检验
   HV      : 超体积(相对参考点, 越大越好)
   IGD     : 反世代距离(相对参考前沿, 越小越好)
   Spacing : 解分布均匀性(越小越均匀)
-统计检验(实验设计方案2 §1.4): Wilcoxon 秩和 + Friedman。
+统计检验(实验设计方案2 §1.4): 配对Wilcoxon符号秩 + Friedman。
 """
 import numpy as np
 from scipy import stats
@@ -15,17 +15,28 @@ from scipy import stats
 def nondominated(F):
     """提取非支配解(最小化)。F: (n,2)。"""
     F = np.asarray(F, float)
-    n = len(F)
-    keep = np.ones(n, bool)
-    for i in range(n):
-        if not keep[i]:
-            continue
-        for j in range(n):
-            if i == j or not keep[j]:
-                continue
-            if np.all(F[j] <= F[i]) and np.any(F[j] < F[i]):
-                keep[i] = False
-                break
+    if F.size == 0:
+        return np.empty((0, 2), float)
+    F = np.atleast_2d(F)
+    F = F[np.all(np.isfinite(F), axis=1)]
+    F = np.unique(F, axis=0)
+    if F.shape[1] == 2:
+        # 二目标专用 O(n log n) 扫描；30次Pareto前沿池化后仍可高效处理。
+        order = np.lexsort((F[:, 1], F[:, 0]))
+        sorted_F = F[order]
+        keep = np.zeros(len(sorted_F), dtype=bool)
+        best_y = np.inf
+        for i, (_, y) in enumerate(sorted_F):
+            if y < best_y:
+                keep[i] = True
+                best_y = y
+        return sorted_F[keep]
+
+    # 非二目标的通用回退实现。
+    keep = np.ones(len(F), bool)
+    for i in range(len(F)):
+        if np.any(np.all(F <= F[i], axis=1) & np.any(F < F[i], axis=1)):
+            keep[i] = False
     return F[keep]
 
 
@@ -87,13 +98,32 @@ def build_reference_front(all_fronts):
 
 
 # ---------------- 统计检验 ----------------
-def wilcoxon_ranksum(target_samples, other_samples):
-    """Wilcoxon 秩和检验(成对, IJS vs 其它), 返回 p 值。"""
+def wilcoxon_signedrank(target_samples, other_samples):
+    """相同种子配对结果的双侧Wilcoxon符号秩检验，返回p值。"""
+    target = np.asarray(target_samples, dtype=float)
+    other = np.asarray(other_samples, dtype=float)
+    if target.shape != other.shape:
+        raise ValueError("配对Wilcoxon要求两组样本数量与顺序一致")
+    if np.allclose(target, other, rtol=0.0, atol=1e-15):
+        return 1.0
     try:
-        _, p = stats.ranksums(target_samples, other_samples)
+        _, p = stats.wilcoxon(target, other, alternative="two-sided")
         return float(p)
     except Exception:
         return np.nan
+
+
+def holm_adjust(p_values):
+    """Holm逐步校正。输入/输出均为{name: p}字典。"""
+    finite = [(k, float(p)) for k, p in p_values.items() if np.isfinite(p)]
+    ordered = sorted(finite, key=lambda item: item[1])
+    adjusted = {k: np.nan for k in p_values}
+    running = 0.0
+    m = len(ordered)
+    for i, (key, p) in enumerate(ordered):
+        running = max(running, (m - i) * p)
+        adjusted[key] = float(min(running, 1.0))
+    return adjusted
 
 
 def friedman_ranks(sample_dict):

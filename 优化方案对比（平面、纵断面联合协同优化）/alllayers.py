@@ -3,14 +3,16 @@
 alllayers.py — 图C9: 全图层叠加图(DEM + OSM 路网/铁路/水系 + OSM 建筑 + 最终线位 + 桥隧标注)
 
 把优化结果放回真实地理背景中核验: 优化线位穿过什么地形、是否压占既有路网/铁路/水系、
-是否避开建筑密集区, 以及哪些桩号是靠桥梁/隧道通过的。
+与OSM建筑的空间关系, 以及哪些桩号是靠桥梁/隧道通过的。建筑图层仅用于增强
+可视化效果，不进入优化目标或约束。
 
 【图层与数据源】
   DEM 底图   : 数据/走廊带DEM_z14_ext.npz (AWS Terrain Tiles z14, 约 8.8 m/px, 现状地表)
   OSM 障碍物 : 数据/OSM走廊带障碍物/obstacles.npz (road/rail/water 折线)
   OSM 建筑   : 数据/OSM走廊带障碍物/buildings_full.npz (完整轮廓多边形, 22590 个建筑,
                已与 Overpass `out count` 逐项核对一致, 见该目录 README 第 5 节)
-  线位        : results/joint_results.json 的 M_A(现状) 与 M_C(平纵联合协同优化, 最终方案)
+  线位        : results/joint_results_w500_nodens.json 的 M_A(现状) 与
+                M_C(平纵联合协同优化, 最终方案)
 
 【桥隧判据 — 与成本模型完全一致, 不是另立标准】
   与 objective.earthwork_cost 相同: 填方段 dz>0 且(土方费>桥单价 或 填高>30m) -> 桥;
@@ -124,7 +126,7 @@ def structure_masks(scheme, pc):
 
 
 def fig_C9_alllayers(d, save):
-    """d: joint_results.json 已加载的 dict; save: make_outputs._save 回调。"""
+    """d: 当前自由端点、无密度约束主结果; save: make_outputs._save 回调。"""
     C = d["M_C"]
     align = load_alignment()
     lat0_deg = float(align["lat"][0])
@@ -221,7 +223,7 @@ def fig_C9_alllayers(d, save):
         Line2D([0], [0], color="#7b3fa0", lw=2, label="OSM rail"),
         Line2D([0], [0], color="#2b8cbe", lw=2, label="OSM water"),
         Patch(facecolor="#8b0000", edgecolor="none",
-               label=f"Building footprint ({n_bld} OSM, {km2:.1f} km$^2$)"),
+               label=f"OSM building footprint (visual only; {n_bld}, {km2:.1f} km$^2$)"),
     ]
     ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.16),
               ncol=4, fontsize=8.5, framealpha=0.9)

@@ -1,0 +1,195 @@
+\begin{thebibliography}{10}
+\expandafter\ifx\csname url\endcsname\relax
+  \def\url#1{\texttt{#1}}\fi
+\expandafter\ifx\csname urlprefix\endcsname\relax\def\urlprefix{URL }\fi
+\expandafter\ifx\csname href\endcsname\relax
+  \def\href#1#2{#2} \def\path#1{#1}\fi
+
+\bibitem{chew1989}
+E.~P. Chew, C.~J. Goh, T.~F. Fwa, Simultaneous optimization of horizontal and
+  vertical alignments for highways, Transportation Research Part B:
+  Methodological 23~(5) (1989) 315--329.
+\newblock \href {https://doi.org/10.1016/0191-2615(89)90008-8}
+  {\path{doi:10.1016/0191-2615(89)90008-8}}.
+
+\bibitem{jong2003}
+J.-C. Jong, P.~Schonfeld, An evolutionary model for simultaneously optimizing
+  three-dimensional highway alignments, Transportation Research Part B:
+  Methodological 37~(2) (2003) 107--128.
+\newblock \href {https://doi.org/10.1016/S0191-2615(01)00047-9}
+  {\path{doi:10.1016/S0191-2615(01)00047-9}}.
+
+\bibitem{kang2012}
+M.-W. Kang, M.~K. Jha, P.~Schonfeld, Applicability of highway alignment
+  optimization models, Transportation Research Part C: Emerging Technologies
+  21~(1) (2012) 257--286.
+\newblock \href {https://doi.org/10.1016/j.trc.2011.09.006}
+  {\path{doi:10.1016/j.trc.2011.09.006}}.
+
+\bibitem{mondal2015}
+S.~Mondal, Y.~Lucet, W.~Hare, Optimizing horizontal alignment of roads in a
+  specified corridor, Computers \& Operations Research 64 (2015) 130--138.
+\newblock \href {https://doi.org/10.1016/j.cor.2015.05.018}
+  {\path{doi:10.1016/j.cor.2015.05.018}}.
+
+\bibitem{hirpa2016}
+D.~Hirpa, W.~Hare, Y.~Lucet, Y.~Pushak, S.~Tesfamariam, A bi-objective
+  optimization framework for three-dimensional road alignment design,
+  Transportation Research Part C: Emerging Technologies 65 (2016) 61--78.
+\newblock \href {https://doi.org/10.1016/j.trc.2016.01.016}
+  {\path{doi:10.1016/j.trc.2016.01.016}}.
+
+\bibitem{vazquez2018}
+M.~E. V{\'a}zquez-M{\'e}ndez, G.~Casal, D.~Santamarina, A.~Castro, A 3d model
+  for optimizing infrastructure costs in road design, Computer-Aided Civil and
+  Infrastructure Engineering 33~(5) (2018) 423--439.
+\newblock \href {https://doi.org/10.1111/mice.12350}
+  {\path{doi:10.1111/mice.12350}}.
+
+\bibitem{akhmet2022}
+A.~Akhmet, W.~Hare, Y.~Lucet, Bi-objective optimization for road vertical
+  alignment design, Computers \& Operations Research 143 (2022) 105764.
+\newblock \href {https://doi.org/10.1016/j.cor.2022.105764}
+  {\path{doi:10.1016/j.cor.2022.105764}}.
+
+\bibitem{han2023}
+C.~Han, T.~Han, T.~Ma, Z.~Tong, S.~Wang, T.~Hei, End-to-end bim-based
+  optimization for dual-objective road alignment design with driving safety and
+  construction cost efficiency, Automation in Construction 151 (2023) 104884.
+\newblock \href {https://doi.org/10.1016/j.autcon.2023.104884}
+  {\path{doi:10.1016/j.autcon.2023.104884}}.
+
+\bibitem{he2023}
+Q.~He, T.~Gao, Y.~Gao, H.~Li, P.~Schonfeld, Y.~Zhu, Q.~Li, P.~Wang, A
+  bi-objective deep reinforcement learning approach for low-carbon-emission
+  high-speed railway alignment design, Transportation Research Part C: Emerging
+  Technologies 147 (2023) 104006.
+\newblock \href {https://doi.org/10.1016/j.trc.2022.104006}
+  {\path{doi:10.1016/j.trc.2022.104006}}.
+
+\bibitem{alhadad2024}
+B.~M.~A. Al-Hadad, W.~H. Nadir, G.~A.~M. Jukil, Intelligent optimization of
+  highway alignments: A novel approach integrating geographic information
+  system and genetic algorithms, Engineering Applications of Artificial
+  Intelligence 133 (2024) 108037.
+\newblock \href {https://doi.org/10.1016/j.engappai.2024.108037}
+  {\path{doi:10.1016/j.engappai.2024.108037}}.
+
+\bibitem{pu2024}
+H.~Pu, X.~Wan, T.~Song, P.~Schonfeld, L.~Peng, A 3d-rrt-star algorithm for
+  optimizing constrained mountain railway alignments, Engineering Applications
+  of Artificial Intelligence 130 (2024) 107770.
+\newblock \href {https://doi.org/10.1016/j.engappai.2023.107770}
+  {\path{doi:10.1016/j.engappai.2023.107770}}.
+
+\bibitem{pu2026}
+H.~Pu, Q.~Zeng, T.~Song, P.~Schonfeld, G.~Wang, W.~Li, L.~Peng, J.~Hu, A hybrid
+  proximal policy optimization and particle swarm algorithm for highway
+  alignment optimization, Advanced Engineering Informatics 69 (2026) 103959.
+\newblock \href {https://doi.org/10.1016/j.aei.2025.103959}
+  {\path{doi:10.1016/j.aei.2025.103959}}.
+
+\bibitem{songreview2023}
+T.~Song, P.~Schonfeld, H.~Pu, A review of alignment optimization research for
+  roads, railways and rail transit lines, IEEE Transactions on Intelligent
+  Transportation Systems 24~(5) (2023).
+\newblock \href {https://doi.org/10.1109/TITS.2023.3235685}
+  {\path{doi:10.1109/TITS.2023.3235685}}.
+
+\bibitem{davey2017}
+N.~Davey, S.~Dunstall, S.~Halgamuge, Optimal road design through ecologically
+  sensitive areas considering animal migration dynamics, Transportation
+  Research Part C: Emerging Technologies 77 (2017) 478--494.
+\newblock \href {https://doi.org/10.1016/j.trc.2017.02.016}
+  {\path{doi:10.1016/j.trc.2017.02.016}}.
+
+\bibitem{zhang2020}
+H.~Zhang, H.~Pu, P.~Schonfeld, T.~Song, W.~Li, J.~Wang, X.~Peng, J.~Hu,
+  Multi-objective railway alignment optimization considering costs and
+  environmental impacts, Applied Soft Computing 89 (2020) 106105.
+\newblock \href {https://doi.org/10.1016/j.asoc.2020.106105}
+  {\path{doi:10.1016/j.asoc.2020.106105}}.
+
+\bibitem{song2022}
+T.~Song, H.~Pu, P.~Schonfeld, H.~Zhang, W.~Li, J.~Hu, Simultaneous optimization
+  of 3d alignments and station locations for dedicated high-speed railways,
+  Computer-Aided Civil and Infrastructure Engineering 37~(4) (2022) 405--426.
+\newblock \href {https://doi.org/10.1111/mice.12739}
+  {\path{doi:10.1111/mice.12739}}.
+
+\bibitem{lin2025}
+K.~Lin, A three-dimensional alignment design method for highways with
+  life-cycle cost and energy consumption objectives, Master's thesis, Foshan
+  University, Foshan, China (2025).
+
+\bibitem{llopis2019}
+D.~Llopis-Castell{\'o}, F.~J. Camacho-Torregrosa, A.~Garc{\'i}a, Analysis of
+  the influence of geometric design consistency on vehicle co2 emissions,
+  Transportation Research Part D: Transport and Environment 69 (2019) 40--50.
+\newblock \href {https://doi.org/10.1016/j.trd.2019.01.029}
+  {\path{doi:10.1016/j.trd.2019.01.029}}.
+
+\bibitem{dimartino2022}
+A.~Di~Martino, S.~M. Miraftabzadeh, M.~Longo, Strategies for the modelisation
+  of electric vehicle energy consumption: A review, Energies 15~(21) (2022)
+  8115.
+\newblock \href {https://doi.org/10.3390/en15218115}
+  {\path{doi:10.3390/en15218115}}.
+
+\bibitem{deb2002}
+K.~Deb, A.~Pratap, S.~Agarwal, T.~Meyarivan, A fast and elitist multiobjective
+  genetic algorithm: Nsga-ii, IEEE Transactions on Evolutionary Computation
+  6~(2) (2002) 182--197.
+\newblock \href {https://doi.org/10.1109/4235.996017}
+  {\path{doi:10.1109/4235.996017}}.
+
+\bibitem{chou2021}
+J.-S. Chou, D.-N. Truong, A novel metaheuristic optimizer inspired by behavior
+  of jellyfish in ocean, Applied Mathematics and Computation 389 (2021) 125535.
+\newblock \href {https://doi.org/10.1016/j.amc.2020.125535}
+  {\path{doi:10.1016/j.amc.2020.125535}}.
+
+\bibitem{storn1997}
+R.~Storn, K.~Price, Differential evolution---a simple and efficient heuristic
+  for global optimization over continuous spaces, Journal of Global
+  Optimization 11 (1997) 341--359.
+\newblock \href {https://doi.org/10.1023/A:1008202821328}
+  {\path{doi:10.1023/A:1008202821328}}.
+
+\bibitem{shannon1948}
+C.~E. Shannon, A mathematical theory of communication, Bell System Technical
+  Journal 27~(3) (1948) 379--423.
+\newblock \href {https://doi.org/10.1002/j.1538-7305.1948.tb01338.x}
+  {\path{doi:10.1002/j.1538-7305.1948.tb01338.x}}.
+
+\bibitem{awsterrain}
+{Amazon Web Services},
+  \href{https://registry.opendata.aws/terrain-tiles/}{Terrain tiles on the
+  registry of open data on aws}, AWS Open Data Registry (2026).
+\newline\urlprefix\url{https://registry.opendata.aws/terrain-tiles/}
+
+\bibitem{haklay2008}
+M.~Haklay, P.~Weber, Openstreetmap: User-generated street maps, IEEE Pervasive
+  Computing 7~(4) (2008) 12--18.
+\newblock \href {https://doi.org/10.1109/MPRV.2008.80}
+  {\path{doi:10.1109/MPRV.2008.80}}.
+
+\bibitem{osmlicense}
+{OpenStreetMap Foundation},
+  \href{https://www.openstreetmap.org/copyright}{Openstreetmap copyright and
+  license} (2026).
+\newline\urlprefix\url{https://www.openstreetmap.org/copyright}
+
+\bibitem{guangzhou2025}
+{Guangzhou Municipal Development and Reform Commission}, Guidelines for
+  estimating municipal government-invested projects: Volume ii, municipal
+  transportation engineering, Tech. rep., Guangzhou Municipal Government,
+  Guangzhou, official Chinese cost-estimation guideline; archived with the
+  experiment data (2025).
+
+\bibitem{jtgd20}
+{Ministry of Transport of the People's Republic of China}, Design Specification
+  for Highway Alignment (JTG D20-2017), China Communications Press, Beijing
+  (2017).
+
+\end{thebibliography}

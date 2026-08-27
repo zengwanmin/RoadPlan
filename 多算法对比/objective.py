@@ -363,7 +363,7 @@ def objectives(x, ctx):
     pen += np.sum(np.where(over > 0, over, 0.0)) * 1e9
     # 相邻坡度代数差(竖曲线约束 式4.28 近似): 限制变坡率。
     # 限值按桩号步长归一: 基准 0.03/100m -> 3e-4 每米, dg_lim = 3e-4×步长,
-    # 使不同桩号步长(多算法对比 P1-P6)下的物理约束(单位长度坡率变化)一致。
+    # 使不同桩号步长(多算法对比 PJ1-PJ6)下的物理约束(单位长度坡率变化)一致。
     ds_mean = float(np.mean(np.diff(sta)))
     dg_lim = 3e-4 * ds_mean
     dgrade = np.abs(np.diff(grades))

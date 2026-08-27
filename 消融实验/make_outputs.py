@@ -4,6 +4,7 @@ make_outputs.py — 由消融实验结果生成实验设计方案要求的全部
 
 表: 表A1(消融变体组件配置)  表A2(各变体性能对比)
 图: 图A1(收敛曲线)  图A2(三组件贡献瀑布图)  图A3(30次结果箱线图)
+    图A4(30次阶段直接贡献分布 + 配对消融最终性能贡献)
 输出: figures/*.png(+pdf矢量)  tables/*.csv + *.md
 """
 import os, json
@@ -56,6 +57,31 @@ def _order(d):
     return [k for k in ORDER if k in d["variants"]]
 
 
+def _paired_wilcoxon_p(base, variant):
+    """相同运行种子下的双侧配对 Wilcoxon 符号秩检验。"""
+    from scipy import stats as _st
+    base = np.asarray(base, dtype=float)
+    variant = np.asarray(variant, dtype=float)
+    if base.shape != variant.shape:
+        raise ValueError("配对检验要求基线与变体具有相同数量且顺序一致的运行结果")
+    if np.allclose(base, variant, rtol=0.0, atol=1e-15):
+        return 1.0
+    return float(_st.wilcoxon(base, variant, alternative="two-sided").pvalue)
+
+
+def _bootstrap_mean_ci(values, confidence=0.95, n_resamples=10000,
+                       seed=20260827):
+    """确定性bootstrap均值置信区间；仅用于已有独立运行结果的统计展示。"""
+    values = np.asarray(values, dtype=float)
+    if values.ndim != 1 or len(values) == 0:
+        raise ValueError("bootstrap输入必须是一维非空数组")
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(values), size=(n_resamples, len(values)))
+    boot_means = values[idx].mean(axis=1)
+    alpha = (1.0 - confidence) / 2.0
+    return tuple(np.quantile(boot_means, [alpha, 1.0 - alpha]))
+
+
 def load():
     with open(RES, encoding="utf-8") as f:
         return json.load(f)
@@ -83,14 +109,13 @@ def table_A1():
 #  表 A2: 各变体性能对比 (最优/均值/标准差/收敛代数/运行时间 + 相对JS提升率)
 # =============================================================
 def table_A2(d):
-    from scipy import stats as _st
     v = d["variants"]
     base = v["V1_JS"]["mean"]
     v1_fs = np.array(v["V1_JS"]["best_fs"])
     v1_final = np.array(d["curves"]["V1_JS"])[-1]
     hdr = ["变体", "最优F", "均值F", "中位数F", "标准差", "F@100代", "F@300代",
            "到达JS终值代数", "自身99%收敛代数", "每代NFE(×pop)", "运行时间(s)",
-           "相对JS提升(%)", "Wilcoxon p(vs JS)"]
+           "相对JS提升(%)", "配对Wilcoxon p(vs JS)"]
     rows = []
     for k in _order(d):
         r = v[k]
@@ -103,8 +128,7 @@ def table_A2(d):
         if k == "V1_JS":
             pval = "-"
         else:
-            _, p = _st.mannwhitneyu(v1_fs, np.array(r["best_fs"]),
-                                    alternative="two-sided")
+            p = _paired_wilcoxon_p(v1_fs, np.array(r["best_fs"]))
             pval = f"{p:.3g}"
         rows.append((LABEL[k], f"{r['best']:.4f}", f"{r['mean']:.4f}",
                      f"{np.median(r['best_fs']):.4f}", f"{r['std']:.4f}",
@@ -210,7 +234,7 @@ def _save(name):
 
 # =============================================================
 #  机制对齐指标(问题15, 预注册定义): 表A3 + 图A4-A6
-#  数据源: results/ablation_traces.json (run(track=True), 前10种子)
+#  数据源: results/ablation_traces.json (run(track=True), 正式实验全部30个种子)
 # =============================================================
 TRACES = os.path.join(HERE, "results", "ablation_traces.json")
 
@@ -257,7 +281,7 @@ def _escape_stats(tr, stall=20):
 
 
 def table_A3(d, td):
-    """表A3: 机制对齐指标(每变体对含该机制的项计算, 值为10个插桩种子的中位数)。"""
+    """表A3: 机制对齐指标(每变体对含该机制的项计算, 值为全部插桩运行的中位数)。"""
     tr_all = td["traces"]
     pop = d["meta"]["pop_size"]
     hdr = ["变体", "Tent初始替换数/200", "Tent初始ΔF(总)",
@@ -310,28 +334,119 @@ def table_A3(d, td):
     _write_table("表A3_机制对齐指标", hdr, rows)
 
 
+def _direct_phase_share(trace, phase):
+    """某阶段当场刷新全局最优的累计ΔF占三阶段直接改进总量的比例。"""
+    totals = {
+        p: float(np.sum(trace["phase_dF"].get(p, [])))
+        for p in ("main", "levy", "de")
+    }
+    total = sum(totals.values())
+    return 100.0 * totals[phase] / total if total > 0.0 else 0.0
+
+
 def fig_A4(d, td):
-    """图A4: 阶段改进归因——各阶段累计 ΔF 随代数(中位种子)。"""
+    """图A4: 30次阶段直接贡献分布 + 配对消融的最终性能贡献。"""
     tr_all = td["traces"]
-    keys = [k for k in ("V5_IJS", "V8_JS+Levy+DE", "V4_JS+DE", "V3_JS+Levy")
-            if k in tr_all and tr_all[k]]
-    fig, axes = plt.subplots(1, len(keys), figsize=(4.0 * len(keys), 4.2),
-                             sharey=False)
-    if len(keys) == 1:
-        axes = [axes]
-    for ax, k in zip(axes, keys):
-        t = tr_all[k][0]
-        for p, c, lab in (("main", "#7f7f7f", "JS main"),
-                          ("levy", "#2ca02c", "Levy"),
-                          ("de", "#ff7f0e", "DE")):
-            a = t["phase_dF"].get(p, [])
-            if a:
-                ax.plot(np.cumsum(a), color=c, lw=1.6, label=lab)
-        ax.set_title(LABEL_EN[k], fontsize=10)
-        ax.set_xlabel("Iteration"); ax.grid(alpha=0.3)
-    axes[0].set_ylabel("Cumulative best-F improvement")
-    axes[0].legend(frameon=False, fontsize=9)
-    fig.suptitle("Fig. A4  Per-phase attribution of best-F improvement (tracked seed)")
+    expected_n = int(d["meta"]["n_runs"])
+    direct_specs = [
+        ("V3_JS+Levy", "levy", "Levy in V3", "#2ca02c"),
+        ("V4_JS+DE", "de", "DE in V4", "#ff7f0e"),
+    ]
+
+    # 不允许用旧的10次轨迹误标为30次分布；须先由新版run_ablation生成完整轨迹。
+    incomplete = [
+        f"{k}: {len(tr_all.get(k, []))}/{expected_n}"
+        for k, _, _, _ in direct_specs
+        if len(tr_all.get(k, [])) != expected_n
+    ]
+    if incomplete:
+        print("[跳过] 图A4需要全部配对运行的阶段轨迹；当前 " + ", ".join(incomplete))
+        return
+
+    v = d["variants"]
+    required = ["V1_JS", "V3_JS+Levy", "V4_JS+DE"]
+    missing = [k for k in required if k not in v]
+    if missing:
+        print("[跳过] 图A4缺少变体结果: " + ", ".join(missing))
+        return
+    if any(len(v[k]["best_fs"]) != expected_n for k in required):
+        print(f"[跳过] 图A4需要{expected_n}次且按相同种子排序的各变体终值")
+        return
+
+    direct_data = [
+        np.array([_direct_phase_share(t, phase) for t in tr_all[k]], dtype=float)
+        for k, phase, _, _ in direct_specs
+    ]
+    direct_labels = [lab for _, _, lab, _ in direct_specs]
+    direct_colors = [color for _, _, _, color in direct_specs]
+
+    base = np.asarray(v["V1_JS"]["best_fs"], dtype=float)
+    paired_specs = [
+        ("V3_JS+Levy", "+Levy (V3 vs V1)", "#2ca02c"),
+        ("V4_JS+DE", "+DE (V4 vs V1)", "#ff7f0e"),
+    ]
+    paired_data = [
+        100.0 * (base - np.asarray(v[k]["best_fs"], dtype=float)) / base
+        for k, _, _ in paired_specs
+    ]
+    paired_labels = [lab for _, lab, _ in paired_specs]
+    paired_colors = [color for _, _, color in paired_specs]
+
+    fig, (ax_direct, ax_paired) = plt.subplots(1, 2, figsize=(11.2, 4.8))
+    rng = np.random.default_rng(20260827)
+
+    bp = ax_direct.boxplot(
+        direct_data, patch_artist=True, showmeans=True,
+        tick_labels=direct_labels, widths=0.55,
+        medianprops=dict(color="black"),
+    )
+    for i, (patch, values, color) in enumerate(
+            zip(bp["boxes"], direct_data, direct_colors), start=1):
+        patch.set_facecolor(color); patch.set_alpha(0.55)
+        jitter = rng.uniform(-0.09, 0.09, size=len(values))
+        ax_direct.scatter(i + jitter, values, s=14, color=color,
+                          alpha=0.45, edgecolors="none", zorder=3)
+        ax_direct.text(i, np.max(values), f"median={np.median(values):.2f}%",
+                       ha="center", va="bottom", fontsize=8)
+    ax_direct.set_ylabel("Direct share of total best-F improvement (%)")
+    ax_direct.set_title(f"(a) Direct operator contribution ({expected_n} runs)")
+    ax_direct.set_ylim(bottom=0.0)
+    ax_direct.grid(axis="y", alpha=0.3)
+
+    bp = ax_paired.boxplot(
+        paired_data, patch_artist=True, showmeans=True,
+        tick_labels=paired_labels, widths=0.55,
+        medianprops=dict(color="black"),
+    )
+    summary_lines = []
+    for i, (patch, values, color, (k, _, _)) in enumerate(
+            zip(bp["boxes"], paired_data, paired_colors, paired_specs), start=1):
+        patch.set_facecolor(color); patch.set_alpha(0.55)
+        jitter = rng.uniform(-0.09, 0.09, size=len(values))
+        ax_paired.scatter(i + jitter, values, s=14, color=color,
+                          alpha=0.45, edgecolors="none", zorder=3)
+        lo, hi = _bootstrap_mean_ci(values, seed=20260827 + i)
+        p = _paired_wilcoxon_p(base, v[k]["best_fs"])
+        summary_lines.append(
+            f"{paired_labels[i - 1]}: mean={np.mean(values):.2f}% "
+            f"[95% CI {lo:.2f}, {hi:.2f}], paired p={p:.3g}"
+        )
+    ax_paired.axhline(0.0, color="#555555", ls="--", lw=1.0)
+    ax_paired.set_ylabel("Paired final-F improvement vs JS (%)")
+    ax_paired.set_title(f"(b) Counterfactual final effect ({expected_n} paired runs)")
+    ax_paired.grid(axis="y", alpha=0.3)
+    ax_paired.text(0.02, 0.98, "\n".join(summary_lines),
+                   transform=ax_paired.transAxes, ha="left", va="top", fontsize=8,
+                   bbox=dict(facecolor="white", edgecolor="none", alpha=0.75))
+
+    fig.suptitle("Fig. A4  Direct stage contribution and paired final performance effect")
+    fig.text(
+        0.5, 0.01,
+        "Direct share credits only immediate best-F updates in the fixed order "
+        "JS → Levy → DE; it is an operational measure, not a causal effect.",
+        ha="center", fontsize=8, color="#444444",
+    )
+    fig.tight_layout(rect=(0.0, 0.07, 1.0, 0.93))
     _save("图A4_阶段改进归因")
 
 

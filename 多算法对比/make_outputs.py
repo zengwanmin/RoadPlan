@@ -2,8 +2,10 @@
 """
 make_outputs.py — 由多算法对比结果生成实验设计方案要求的全部图表 (实验二)
 
-表: 表B1(六规模运行时间与最优F)  表B2(最优/均值/标准差+Wilcoxon p+Friedman秩)  表B3(HV/IGD/Spacing)
-图: 图B1(六规模收敛曲线 a-f)  图B2(Pareto前沿分布)  图B3(运行时间随规模)  图B4(F值箱线图)
+表: 表B1(30次运行时间与最终F)  表B2(描述统计+配对检验+Friedman秩)
+    表B3(30次HV/IGD/Spacing)  表B4(30次可行性)  表B5(PJ1–PJ6规模统计)
+图: 图B1(30次逐NFE收敛中位数+IQR)  图B2(30次Pareto前沿及汇总前沿)
+    图B3(30次运行时间均值+95%CI)  图B4(30次最终F分布)
 图的横轴/纵轴/图例/图名均为英文。
 """
 import os, json
@@ -36,11 +38,65 @@ SCALE_LABEL = {"PJ1": "PJ1 (500 m)", "PJ2": "PJ2 (400 m)", "PJ3": "PJ3 (300 m)",
 COLOR = {"IJS": "#c44e52", "JS": "#4c72b0", "NSGA-II": "#55a868",
          "GA": "#8172b3", "PSO": "#ccb974", "GWO": "#64b5cd"}
 STYLE = {"IJS": "-", "JS": "--", "NSGA-II": "-.", "GA": ":", "PSO": "--", "GWO": "-."}
+EXPECTED_RUNS = 30
 
 
 def load():
     with open(RES, encoding="utf-8") as f:
-        return json.load(f)
+        d = json.load(f)
+    n_runs = int(d.get("meta", {}).get("n_runs", 0))
+    pareto_n_runs = int(d.get("meta", {}).get("pareto_n_runs", 0))
+    if n_runs != EXPECTED_RUNS or pareto_n_runs != EXPECTED_RUNS:
+        raise RuntimeError(
+            f"正式图表要求标量与Pareto均为{EXPECTED_RUNS}次独立运行；"
+            f"当前结果为 scalar={n_runs}, Pareto={pareto_n_runs}。请先重新运行实验。"
+        )
+    for s, scale in d.get("scales", {}).items():
+        scale_fields = ("plane_control_points", "plane_decision_variables",
+                        "profile_control_points", "grade_segments",
+                        "total_control_points", "total_decision_variables", "dim")
+        missing_fields = [name for name in scale_fields if name not in scale]
+        if missing_fields:
+            raise RuntimeError(f"{s}缺少表B5规模字段: {missing_fields}")
+        if (scale["total_decision_variables"] != scale["dim"] or
+                scale["total_decision_variables"] !=
+                scale["plane_decision_variables"] + scale["profile_control_points"] or
+                scale["total_control_points"] !=
+                scale["plane_control_points"] + scale["profile_control_points"] or
+                scale["profile_control_points"] - 1 != scale["grade_segments"]):
+            raise RuntimeError(f"{s}表B5规模统计关系不一致")
+        for algo in ALGOS:
+            scalar_n = len(scale.get("algos", {}).get(algo, {}).get("best_fs", []))
+            curves = scale.get("curves", {}).get(algo, [])
+            nfe_axis = scale.get("nfe_axes", {}).get(algo, [])
+            curve_n = len(curves)
+            pareto_runs = scale.get("pareto_front_runs", {}).get(algo, [])
+            pareto_n = len(pareto_runs)
+            if (scalar_n, curve_n, pareto_n) != (EXPECTED_RUNS,) * 3:
+                raise RuntimeError(
+                    f"{s}/{algo}运行数不完整: final={scalar_n}, "
+                    f"curves={curve_n}, Pareto={pareto_n}"
+                )
+            if not nfe_axis or any(len(curve) != len(nfe_axis) for curve in curves):
+                raise RuntimeError(f"{s}/{algo}收敛曲线与NFE轴长度不一致")
+            if any(front is None for front in pareto_runs):
+                raise RuntimeError(f"{s}/{algo}存在缺失的Pareto独立运行前沿")
+            metrics = scale.get("pareto_metrics", {}).get(algo, {})
+            for metric in ("HV", "IGD", "Spacing"):
+                if len(metrics.get(metric, [])) != EXPECTED_RUNS:
+                    raise RuntimeError(f"{s}/{algo}/{metric}不是{EXPECTED_RUNS}次指标")
+    return d
+
+
+def _bootstrap_mean_ci(values, confidence=0.95, n_resamples=10000,
+                       seed=20260827):
+    """30次独立运行均值的确定性bootstrap置信区间。"""
+    values = np.asarray(values, dtype=float)
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(values), size=(n_resamples, len(values)))
+    boot = values[idx].mean(axis=1)
+    alpha = (1.0 - confidence) / 2.0
+    return tuple(np.quantile(boot, [alpha, 1.0 - alpha]))
 
 
 def _write_table(name, hdr, rows):
@@ -55,49 +111,74 @@ def _write_table(name, hdr, rows):
     print(f"[表] {name}")
 
 
-# ---- 表B1: 六规模运行时间(s) 与 最优综合效益F ----
+# ---- 表B1: 六规模30次运行时间与最终综合效益F ----
 def table_B1(d):
-    hdr = ["Algorithm"] \
-        + [f"Runtime {s} (s)" for s in SCALE_KEYS] \
-        + [f"Best F  {s}" for s in SCALE_KEYS]
+    hdr = ["Algorithm", "Runs"] \
+        + [f"Runtime {s}, mean±SD (s)" for s in SCALE_KEYS] \
+        + [f"Final F {s}, mean±SD" for s in SCALE_KEYS]
     rows = []
     for a in ALGOS:
-        rt = [f"{d['scales'][s]['algos'][a]['runtime_mean']:.2f}" for s in SCALE_KEYS]
-        bf = [f"{d['scales'][s]['algos'][a]['best']:.4f}" for s in SCALE_KEYS]
-        rows.append([a] + rt + bf)
+        rt = []
+        final_f = []
+        for s in SCALE_KEYS:
+            ai = d["scales"][s]["algos"][a]
+            runtimes = np.asarray(ai["runtimes"], dtype=float)
+            rt.append(f"{np.mean(runtimes):.2f}±{np.std(runtimes, ddof=1):.2f}")
+            final_f.append(f"{ai['mean']:.4f}±{ai['std']:.4f}")
+        rows.append([a, EXPECTED_RUNS] + rt + final_f)
     _write_table("表B1_六规模运行时间与最优效益对比表", hdr, rows)
 
 
-# ---- 表B2: 最优/均值/标准差 + Wilcoxon p + Friedman秩 (逐规模各输出一份) ----
+# ---- 表B2: 30次最终F + 配对Wilcoxon/Holm + Friedman秩 ----
 def table_B2(d):
-    hdr = ["Algorithm", "Best F", "Mean F", "Std F",
-           "Wilcoxon p (vs IJS)", "Friedman rank"]
+    hdr = ["Algorithm", "Runs", "Best F", "Mean F", "Median F", "Std F",
+           "Paired Wilcoxon p (vs IJS)", "Holm-adjusted p", "Friedman rank"]
     for s in SCALE_KEYS:
         st = d["scales"][s]["stats"]
-        wil = st["wilcoxon_vs_IJS"]; rank = st["friedman_avg_rank"]
+        wil = st["paired_wilcoxon_vs_IJS"]
+        holm = st["holm_adjusted_p_vs_IJS"]
+        rank = st["friedman_avg_rank"]
         rows = []
         for a in ALGOS:
             ai = d["scales"][s]["algos"][a]
             p = "-" if a == "IJS" else f"{wil.get(a, float('nan')):.2e}"
-            rows.append([a, f"{ai['best']:.4f}", f"{ai['mean']:.4f}",
-                         f"{ai['std']:.4f}", p, f"{rank[a]:.2f}"])
+            p_holm = "-" if a == "IJS" else f"{holm.get(a, float('nan')):.2e}"
+            rows.append([a, EXPECTED_RUNS, f"{ai['best']:.4f}",
+                         f"{ai['mean']:.4f}", f"{ai['median']:.4f}",
+                         f"{ai['std']:.4f}", p, p_holm, f"{rank[a]:.2f}"])
         _write_table(f"表B2_{s}_算法最优均值标准差与统计检验汇总表", hdr, rows)
 
 
-# ---- 表B3: Pareto质量指标 HV/IGD/Spacing (旧口径; PJ 阶梯无前沿扫描时自动跳过) ----
+# ---- 表B3: PJ1-PJ6的30次Pareto质量指标 ----
 def table_B3(d):
-    hdr = ["Algorithm", "HV (↑)", "IGD (↓)", "Spacing (↓)", "Front points"]
+    hdr = ["Algorithm", "Runs", "HV mean (↑)", "HV SD", "HV Holm p",
+           "IGD mean (↓)", "IGD SD", "IGD Holm p",
+           "Spacing mean (↓)", "Spacing SD", "Spacing Holm p",
+           "Front points mean", "Pooled front points"]
     for s in SCALE_KEYS:
         pm = d["scales"][s].get("pareto_metrics", {})
         if not pm:
             continue
+        pst = d["scales"][s].get("pareto_metric_stats", {})
         rows = []
         for a in ALGOS:
             m = pm.get(a, {})
-            rows.append([a, f"{m.get('HV', float('nan')):.4f}",
-                         f"{m.get('IGD', float('nan')):.4f}",
-                         f"{m.get('Spacing', float('nan')):.4f}",
-                         m.get("n_points", 0)])
+            def adjusted_p(metric):
+                if a == "IJS":
+                    return "-"
+                value = pst.get(metric, {}).get("holm_adjusted_p", {}).get(a, np.nan)
+                return f"{value:.2e}"
+            rows.append([
+                a, EXPECTED_RUNS,
+                f"{m.get('HV_mean', np.nan):.4f}", f"{m.get('HV_std', np.nan):.4f}",
+                adjusted_p("HV"),
+                f"{m.get('IGD_mean', np.nan):.4f}", f"{m.get('IGD_std', np.nan):.4f}",
+                adjusted_p("IGD"),
+                f"{m.get('Spacing_mean', np.nan):.4f}",
+                f"{m.get('Spacing_std', np.nan):.4f}", adjusted_p("Spacing"),
+                f"{m.get('n_points_mean', np.nan):.1f}",
+                m.get("pooled_n_points", 0),
+            ])
         _write_table(f"表B3_{s}_Pareto前沿质量指标对比表", hdr, rows)
 
 
@@ -123,7 +204,29 @@ def table_B4(d):
         _write_table("表B4_可行性与最优解工程指标", hdr, rows)
 
 
-# ---- 图B1: 六规模收敛曲线 (a-f, 2×3子图) ----
+# ---- 表B5: PJ1-PJ6控制点、坡段与决策维数统计 ----
+def table_B5(d):
+    hdr = ["Scale", "Profile step (m)", "Plane control points",
+           "Plane decision variables (modes)", "Profile control points",
+           "Grade segments", "Total control points", "Total decision variables",
+           "Total decision dimension"]
+    rows = []
+    for s in SCALE_KEYS:
+        scale = d["scales"][s]
+        rows.append([
+            s, f"{scale['step_m']:.0f}",
+            scale["plane_control_points"],
+            scale["plane_decision_variables"],
+            scale["profile_control_points"],
+            scale["grade_segments"],
+            scale["total_control_points"],
+            scale["total_decision_variables"],
+            scale["dim"],
+        ])
+    _write_table("表B5_PJ1-PJ6求解规模统计表", hdr, rows)
+
+
+# ---- 图B1: 六规模30次逐NFE收敛中位数与IQR ----
 def fig_B1(d):
     n = len(SCALE_KEYS)
     ncol = 3
@@ -136,12 +239,21 @@ def fig_B1(d):
     for idx, s in enumerate(SCALE_KEYS):
         ax = axes[idx]
         curves = d["scales"][s].get("curves", {})
+        nfe_axes = d["scales"][s].get("nfe_axes", {})
+        common_nfe = min(np.asarray(nfe_axes[a], dtype=float)[-1] for a in ALGOS)
         for a in ALGOS:
-            if a in curves:
-                c = np.array(curves[a])[:201]
-                ax.plot(range(len(c)), c, label=a, color=COLOR[a],
-                        ls=STYLE[a], lw=2.0 if a == "IJS" else 1.4)
-        ax.set_xlabel("Iteration"); ax.set_ylabel("System benefit F")
+            C = np.asarray(curves[a], dtype=float)
+            nfe = np.asarray(nfe_axes[a], dtype=float)
+            mask = nfe <= common_nfe
+            C = C[:, mask]
+            x = nfe[mask] / 1000.0
+            med = np.median(C, axis=0)
+            q25, q75 = np.quantile(C, [0.25, 0.75], axis=0)
+            ax.plot(x, med, label=a, color=COLOR[a], ls=STYLE[a],
+                    lw=2.0 if a == "IJS" else 1.4)
+            ax.fill_between(x, q25, q75, color=COLOR[a], alpha=0.10,
+                            linewidth=0)
+        ax.set_xlabel("Cumulative NFE (×10³)"); ax.set_ylabel("System benefit F")
         ax.set_title(f"({chr(97 + idx)}) {SCALE_LABEL.get(s, s)}"); ax.set_yscale("log")
         ax.grid(alpha=0.3)
         if not handles:                      # 收集一次图例句柄, 供全图统一显示
@@ -151,71 +263,104 @@ def fig_B1(d):
     # 图例统一放图底部一处(替代每个子图各画一份, 更清晰)
     fig.legend(handles, labels, loc="lower center", ncol=len(ALGOS),
                frameon=False, fontsize=9, bbox_to_anchor=(0.5, -0.02))
-    fig.suptitle("Fig. B1  Convergence curves of algorithms at six problem scales (first 200 generations)")
+    fig.suptitle(
+        f"Fig. B1  Pointwise median convergence with IQR over {EXPECTED_RUNS} "
+        "independent runs (common NFE budget)"
+    )
     _save("图B1_六规模迭代收敛曲线")
 
 
-# ---- 图B2: Pareto前沿分布 (逐规模各输出一图), 叠加各算法 ----
+# ---- 图B2: 30次Pareto前沿分布 + 各算法汇总非支配前沿 ----
 def fig_B2(d):
     for s in SCALE_KEYS:
-        fronts = d["scales"][s].get("fronts", {})
-        if not fronts:
+        front_runs = d["scales"][s].get("pareto_front_runs", {})
+        pooled_fronts = d["scales"][s].get("fronts", {})
+        if not front_runs or not pooled_fronts:
             continue
-        plt.figure(figsize=(7.6, 5.4))
+        fig, ax = plt.subplots(figsize=(7.8, 5.6))
         for a in ALGOS:
-            if a in fronts:
-                fr = np.array(fronts[a])
-                if len(fr):
-                    order = np.argsort(fr[:, 1])
-                    fr = fr[order]
-                    mk = "o" if a in ("IJS", "NSGA-II") else "^"
-                    plt.plot(fr[:, 1], fr[:, 0], marker=mk, color=COLOR[a],
-                             ls="-" if a == "IJS" else "none",
-                             ms=8 if a == "IJS" else 6,
-                             lw=1.8 if a == "IJS" else 1.0,
-                             label=f"{a} ({len(fr)} pts)", alpha=0.85,
-                             zorder=5 if a == "IJS" else 3)
+            runs = [np.asarray(fr, dtype=float) for fr in front_runs[a] if len(fr)]
+            if runs:
+                all_points = np.vstack(runs)
+                valid = np.all(all_points > 0.0, axis=1)
+                all_points = all_points[valid]
+                ax.scatter(all_points[:, 1], all_points[:, 0], s=9,
+                           color=COLOR[a], alpha=0.06, edgecolors="none", zorder=1)
+            pooled = np.asarray(pooled_fronts[a], dtype=float)
+            pooled = pooled[np.all(pooled > 0.0, axis=1)]
+            if len(pooled):
+                pooled = pooled[np.argsort(pooled[:, 1])]
+                ax.plot(pooled[:, 1], pooled[:, 0], color=COLOR[a],
+                        marker="o" if a in ("IJS", "NSGA-II") else "^",
+                        ms=4.5, lw=1.8 if a == "IJS" else 1.2,
+                        label=f"{a} pooled front ({len(pooled)} pts)",
+                        alpha=0.95, zorder=4 if a == "IJS" else 3)
+        ref = np.asarray(d["scales"][s].get("reference_front", []), dtype=float)
+        ref = ref[np.all(ref > 0.0, axis=1)] if len(ref) else ref
+        if len(ref):
+            ref = ref[np.argsort(ref[:, 1])]
+            ax.plot(ref[:, 1], ref[:, 0], color="black", ls="--", lw=1.0,
+                    label="Empirical reference front", zorder=2)
         # 目标强正相关 + 基线受约束惩罚 -> 用对数坐标使各算法前沿同时可见
-        plt.xscale("log"); plt.yscale("log")
-        plt.xlabel("Normalized energy consumption  E  (log scale)")
-        plt.ylabel("Normalized life-cycle cost  C  (log scale)")
-        plt.title(f"Fig. B2  Pareto fronts obtained by different algorithms (scale {SCALE_LABEL.get(s, s)})")
-        plt.legend(frameon=False, title="Algorithm (front size)"); plt.grid(alpha=0.3, which="both")
-        # 标注: 左下角为可行最优区
-        plt.annotate("Feasible optimal region\n(low cost & low energy)",
-                     xy=(0.46, 0.06), xytext=(3.0, 0.15),
-                     fontsize=9, color="#c44e52",
-                     arrowprops=dict(arrowstyle="->", color="#c44e52", lw=1.2))
+        ax.set_xscale("log"); ax.set_yscale("log")
+        ax.set_xlabel("Normalized energy consumption  E  (log scale)")
+        ax.set_ylabel("Normalized life-cycle cost  C  (log scale)")
+        ax.set_title(
+            f"Fig. B2  Pareto fronts over {EXPECTED_RUNS} independent runs "
+            f"(scale {SCALE_LABEL.get(s, s)})"
+        )
+        ax.legend(frameon=False, fontsize=8); ax.grid(alpha=0.3, which="both")
+        fig.text(0.5, 0.01,
+                 "Faint points: all run-level fronts; solid lines: pooled nondominated fronts.",
+                 ha="center", fontsize=8, color="#444444")
+        fig.tight_layout(rect=(0.0, 0.04, 1.0, 1.0))
         _save(f"图B2_{s}_各算法Pareto前沿分布")
 
 
-# ---- 图B3: 运行时间随规模增长趋势 ----
+# ---- 图B3: 30次运行时间均值与95% bootstrap CI ----
 def fig_B3(d):
     dims = [d["scales"][s]["dim"] for s in SCALE_KEYS]
     plt.figure(figsize=(7.2, 4.8))
-    for a in ALGOS:
-        rt = [d["scales"][s]["algos"][a]["runtime_mean"] for s in SCALE_KEYS]
-        plt.plot(dims, rt, marker="o", color=COLOR[a], ls=STYLE[a],
-                 lw=2.0 if a == "IJS" else 1.4, label=a)
-    plt.xlabel("Problem dimension (number of grade-change points)")
+    for ai, a in enumerate(ALGOS):
+        means, lows, highs = [], [], []
+        for si, s in enumerate(SCALE_KEYS):
+            values = np.asarray(d["scales"][s]["algos"][a]["runtimes"], dtype=float)
+            lo, hi = _bootstrap_mean_ci(values, seed=20260827 + ai * 100 + si)
+            means.append(float(np.mean(values))); lows.append(lo); highs.append(hi)
+        means = np.asarray(means)
+        yerr = np.vstack([means - np.asarray(lows), np.asarray(highs) - means])
+        plt.errorbar(dims, means, yerr=yerr, marker="o", capsize=3,
+                     color=COLOR[a], ls=STYLE[a],
+                     lw=2.0 if a == "IJS" else 1.4, label=a)
+    plt.xlabel("Total decision dimension (plane-mode coefficients + profile variables)")
     plt.ylabel("Mean runtime (s)")
-    plt.title("Fig. B3  Runtime growth of algorithms with problem scale")
+    plt.title(
+        f"Fig. B3  Runtime versus total decision dimension "
+        f"(mean and 95% CI, {EXPECTED_RUNS} independent runs)"
+    )
     plt.legend(frameon=False); plt.grid(alpha=0.3)
     _save("图B3_运行时间随规模增长趋势")
 
 
-# ---- 图B4: 各算法F值箱线图 (逐规模各输出一图, 30次) ----
+# ---- 图B4: 各算法最终F分布 (逐规模各输出一图, 30次) ----
 def fig_B4(d):
     for s in SCALE_KEYS:
         data = [d["scales"][s]["algos"][a]["best_fs"] for a in ALGOS]
         fig, ax = plt.subplots(figsize=(7.6, 4.8))
         bp = ax.boxplot(data, patch_artist=True, showmeans=True,
                         tick_labels=ALGOS, medianprops=dict(color="black"))
-        for patch, a in zip(bp["boxes"], ALGOS):
+        rng = np.random.default_rng(20260827)
+        for i, (patch, a, values) in enumerate(zip(bp["boxes"], ALGOS, data), start=1):
             patch.set_facecolor(COLOR[a]); patch.set_alpha(0.65)
+            jitter = rng.uniform(-0.09, 0.09, size=len(values))
+            ax.scatter(i + jitter, values, s=13, color=COLOR[a], alpha=0.35,
+                       edgecolors="none", zorder=3)
         ax.set_ylabel(f"System benefit F ({d['meta']['n_runs']} independent runs)")
         ax.set_xlabel("Algorithm")
-        ax.set_title(f"Fig. B4  Box plots of system benefit F across algorithms (scale {SCALE_LABEL.get(s, s)})")
+        ax.set_title(
+            f"Fig. B4  Final-F distributions over {EXPECTED_RUNS} independent runs "
+            f"(scale {SCALE_LABEL.get(s, s)})"
+        )
         ax.grid(axis="y", alpha=0.3)
         _save(f"图B4_{s}_各算法F值箱线图")
 
@@ -231,7 +376,7 @@ def main():
     d = load()
     global SCALE_KEYS
     SCALE_KEYS = [k for k in SCALE_KEYS if k in d["scales"]]
-    table_B1(d); table_B2(d); table_B3(d); table_B4(d)
+    table_B1(d); table_B2(d); table_B3(d); table_B4(d); table_B5(d)
     fig_B1(d); fig_B2(d); fig_B3(d); fig_B4(d)
     print("[完成] 全部图表已输出到 figures/ 与 tables/")
 

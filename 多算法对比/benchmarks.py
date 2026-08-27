@@ -167,10 +167,13 @@ def _crowding_distance(F, idx):
     return dist
 
 
-def run_NSGA2(fobj_bi, lb, ub, pop0, max_iter, seed, pc=0.9, pm=0.1, eta=20.0):
+def run_NSGA2(fobj_bi, lb, ub, pop0, max_iter, seed, pc=0.9, pm=0.1,
+              eta=20.0, scalar_weights=None, record=True):
     """
     NSGA-II 双目标求解。fobj_bi(x)->[C_norm, E_norm]。
-    返回 dict(front_X, front_F, all_F_hist).
+    scalar_weights: 给定(wC, wE)时，逐代记录当前种群的最优加权标量值，
+                    使NSGA-II可与其余算法进行30次收敛轨迹统计。
+    返回 dict(front_X, front_F, curve, nfe, all_F)。
     """
     rng = np.random.default_rng(seed)
     lb = np.asarray(lb, float); ub = np.asarray(ub, float)
@@ -178,6 +181,12 @@ def run_NSGA2(fobj_bi, lb, ub, pop0, max_iter, seed, pc=0.9, pm=0.1, eta=20.0):
     n, dim = P.shape
     F = np.array([fobj_bi(P[i]) for i in range(n)])
     nfe = n
+    scalar_weights = (None if scalar_weights is None
+                      else np.asarray(scalar_weights, dtype=float))
+    if scalar_weights is not None and scalar_weights.shape != (2,):
+        raise ValueError("scalar_weights必须为(wC, wE)两个权重")
+    curve = ([float(np.min(F @ scalar_weights))]
+             if record and scalar_weights is not None else [])
 
     def make_offspring(P, F):
         # 锦标赛选择(基于前沿层级+拥挤距离)(§5.3.1 步骤5)
@@ -237,11 +246,14 @@ def run_NSGA2(fobj_bi, lb, ub, pop0, max_iter, seed, pc=0.9, pm=0.1, eta=20.0):
                 break
         newP_idx = np.array(newP_idx)
         P = R[newP_idx]; F = FR[newP_idx]
+        if record and scalar_weights is not None:
+            curve.append(float(np.min(F @ scalar_weights)))
 
     # 输出第一前沿
     fronts = _fast_nondominated_sort(F)
     f0 = np.array(fronts[0])
-    return dict(front_X=P[f0], front_F=F[f0], nfe=nfe, all_F=F)
+    return dict(front_X=P[f0], front_F=F[f0], curve=np.asarray(curve),
+                nfe=nfe, all_F=F)
 
 
 BENCH_SCALAR = {"GA": run_GA, "PSO": run_PSO, "GWO": run_GWO}

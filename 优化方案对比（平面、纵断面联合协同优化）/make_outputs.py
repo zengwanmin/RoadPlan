@@ -2,8 +2,8 @@
 """
 make_outputs.py — 由【平纵联合协同优化】结果生成实验三全部图表
 
-数据源: results/joint_results_w500_dens.json (run_joint.py 输出, 当前固定端点 W500 主结果)
-        results/twostage_results_w500_dens.json (run_twostage.py 输出, 两阶段对照, 供表C3)
+数据源: results/joint_results_w500_nodens.json (run_joint.py 输出, 自由端点 W500 主结果)
+        results/twostage_results_w500_nodens.json (run_twostage.py 输出, 两阶段对照, 供表C3)
 表: 表C1(三模式四维指标 + M-B→M-C 变化率)  表C2(现状 M-A vs 本文 M-C 关键指标 + 变化%)
     表C3(现状/两阶段/平纵联合协同 三方案对比表)
 图: 图C1(Pareto解集+熵权决策点)
@@ -28,8 +28,8 @@ from params import DESIGN_STD   # 表6.4 竖曲线半径(供图C3竖曲线平滑
 from alllayers import fig_C9_alllayers   # 图C9 全图层叠加(DEM+OSM+建筑+线位+桥隧)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RES = os.path.join(HERE, "results", "joint_results_w500_dens.json")
-RES_TWO = os.path.join(HERE, "results", "twostage_results_w500_dens.json")
+RES = os.path.join(HERE, "results", "joint_results_w500_nodens.json")
+RES_TWO = os.path.join(HERE, "results", "twostage_results_w500_nodens.json")
 FIG = os.path.join(HERE, "figures"); TAB = os.path.join(HERE, "tables")
 os.makedirs(FIG, exist_ok=True); os.makedirs(TAB, exist_ok=True)
 
@@ -75,14 +75,26 @@ def _validate_sources(d):
             "Joint result has no valid current provenance fingerprint; "
             "rerun run_joint.py instead of generating outputs from a legacy JSON.")
     if (float(config.get("corridor_half_w", -1)) != 500.0 or
-            config.get("density_on") is not True or config.get("smoke") is not False):
-        raise RuntimeError("Main-paper outputs require full W500 density-enabled results")
+            config.get("density_on") is not False or
+            config.get("profile_endpoints_fixed") is not False or
+            config.get("smoke") is not False):
+        raise RuntimeError(
+            "Main-paper outputs require full W500 free-endpoint, density-disabled results")
     if not os.path.isfile(RES_TWO):
         raise FileNotFoundError(
             "Current two-stage result is required for Table C3; rerun run_twostage.py")
     with open(RES_TWO, encoding="utf-8") as fp:
         two_stage = json.load(fp)
     two_provenance = two_stage.get("provenance", {})
+    two_config = two_provenance.get("config")
+    if (not isinstance(two_config, dict) or
+            two_provenance.get("config_fingerprint") != _fingerprint(two_config) or
+            float(two_config.get("corridor_half_w", -1)) != 500.0 or
+            two_config.get("density_on") is not False or
+            two_config.get("profile_endpoints_fixed") is not False or
+            two_config.get("smoke") is not False):
+        raise RuntimeError(
+            "Two-stage result is not a full W500 free-endpoint, density-disabled result")
     if two_provenance.get("joint_result_sha256") != _sha256_file(RES):
         raise RuntimeError(
             "Two-stage result is not bound to this exact W500 joint result; "
@@ -469,7 +481,7 @@ def main():
     global RES, RES_TWO
     ap = argparse.ArgumentParser()
     ap.add_argument("--result", default=RES,
-                    help="当前联合主结果，默认W500密度开启结果")
+                    help="当前联合主结果，默认W500自由端点、无密度约束结果")
     ap.add_argument("--two-stage", default=RES_TWO,
                     help="与当前联合结果绑定的两阶段对照结果")
     args = ap.parse_args()

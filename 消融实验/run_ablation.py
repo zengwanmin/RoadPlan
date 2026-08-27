@@ -5,8 +5,9 @@ run_ablation.py — 消融实验主程序 (实验设计方案2 · 实验一)
 流程:
   1. 加载北环高速轨迹, 生成纵断面优化上下文(数据.xlsx, 不可杜撰)
   2. 生成初始种群, 用熵权法(式5.3-5.4)客观确定权重, 构建同口径标量目标F
-  3. 5个变体(V1 JS基线 → V5 IJS完整) × 30次独立运行(pop=200, iter=500)
-  4. 记录 F最优/均值/标准差、收敛代数、运行时间, 保存结果供出图出表
+  3. 8个全因子变体 × 30次独立运行(pop=200, iter=500)
+  4. 记录 F最优/均值/标准差、收敛代数、运行时间及每次运行的阶段直接贡献,
+     保存结果供出图出表
 
 用法:
   python3 run_ablation.py            # 正式全量 (pop200/iter500/30次, ~1.1 h)
@@ -14,7 +15,7 @@ run_ablation.py — 消融实验主程序 (实验设计方案2 · 实验一)
 
 【为何本实验串行执行】表A2 把"平均运行时间(s)"作为结果列上报, 若跨进程并行,
 各变体的耗时会受内存带宽/缓存争用干扰而不再可比。本实验总耗时仅约 1.1 h,
-故坚持单进程串行, 保证 5 个变体的运行时间在同一条件下测得、可直接横向比较。
+故坚持单进程串行, 保证 8 个变体的运行时间在同一条件下测得、可直接横向比较。
 """
 import os, json, time, argparse
 import numpy as np
@@ -73,11 +74,12 @@ def main():
     C_ref, E_ref = float(C0.mean()), float(E0.mean())
     print(f"[熵权法] wC={wC:.4f}, wE={wE:.4f}; C_ref={C_ref/1e8:.3f}亿, E_ref={E_ref:.0f}")
 
-    # ---- 3. 8变体 × 30次独立运行(前 N_TRACK 次带机制插桩, 问题15) ----
-    N_TRACK = 3 if args.smoke else 10
+    # ---- 3. 8变体 × 30次独立运行(全部运行带机制插桩, 问题15) ----
+    # 全部运行统一 track=True, 使阶段直接贡献可以按30个配对种子报告分布,
+    # 同时避免运行时间统计混合“有插桩/无插桩”两种口径。
     all_res = {}
     curves = {}     # 每变体保存一条代表性收敛曲线(取中位run)
-    traces = {}     # {vname: [trace_dict × N_TRACK]} 机制对齐插桩(问题15)
+    traces = {}     # {vname: [trace_dict × n_runs]} 机制对齐插桩(问题15)
     for vname, cfg in VARIANTS.items():
         tv = time.time()
         best_fs, conv_gens, runtimes = [], [], []
@@ -85,20 +87,19 @@ def main():
         v_traces = []
         best_x_overall, best_f_overall = None, np.inf
         for r in range(n_runs):
-            # 每次独立运行用不同种子生成独立初始种群(公平: 同一run内5变体共享)
+            # 每次独立运行用不同种子生成独立初始种群(公平: 同一run内8变体共享)
             rng = np.random.default_rng(1000 + r)
             pop0 = rng.random((pop_size, dim))
             f = make_scalar_fn(ctx, wC, wE, C_ref, E_ref)
             t0 = time.time()
             res = run(f, lb, ub, pop0, max_iter=max_iter, seed=1000 + r,
-                      track=(r < N_TRACK), **cfg)
+                      track=True, **cfg)
             rt = time.time() - t0
             best_fs.append(res["best_f"])
             conv_gens.append(convergence_gen(res["curve"]))
             runtimes.append(rt)
             run_curves.append(res["curve"])
-            if r < N_TRACK:
-                v_traces.append(res["trace"])
+            v_traces.append(res["trace"])
             if res["best_f"] < best_f_overall:
                 best_f_overall = res["best_f"]; best_x_overall = res["best_x"]
         best_fs = np.array(best_fs)
@@ -125,6 +126,7 @@ def main():
     # ---- 4. 保存 ----
     out = dict(
         meta=dict(pop_size=pop_size, max_iter=max_iter, n_runs=n_runs,
+                  run_seeds=[1000 + r for r in range(n_runs)],
                   dim=dim, total_km=align["total_km"],
                   wC=wC, wE=wE, C_ref=C_ref, E_ref=E_ref,
                   CR=ALGO["CR"], levy_beta=ALGO["levy_beta"],
@@ -138,7 +140,14 @@ def main():
     # 机制对齐插桩(问题15)单独保存(体积大, 供 make_outputs 计算表A3/图A4-A6)
     tfn = "ablation_traces_smoke.json" if args.smoke else "ablation_traces.json"
     with open(os.path.join(RESULTS, tfn), "w", encoding="utf-8") as fp:
-        json.dump(dict(n_track=N_TRACK, traces=traces), fp)
+        json.dump(dict(
+            n_track=n_runs,
+            n_runs=n_runs,
+            run_seeds=[1000 + r for r in range(n_runs)],
+            attribution_order=["main", "levy", "de"],
+            attribution_definition="各阶段当场刷新全局最优产生的best-F下降量",
+            traces=traces,
+        ), fp)
     print(f"[完成] 结果已保存 results/{fn} + results/{tfn}  总耗时 {time.time()-t_all:.1f}s")
 
 
