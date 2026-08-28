@@ -1,0 +1,9 @@
+{
+  "schema": "current-output-sources-v1",
+  "joint_result": "results/joint_results_w500_nodens.json",
+  "joint_result_sha256": "62831d59f8db47a1ada0b18c7f79497f05a39227b4cb4eefd10eafa8d06c6aaf",
+  "joint_config_fingerprint": "787dd67212721706b771476438c9d5c7284acfcb9d5d1e488f5037dd789ebf4f",
+  "two_stage_result": "results/twostage_results_w500_nodens.json",
+  "two_stage_result_sha256": "6594a14ea1fba7a933a9c1f8b60ae225fba2b7859494bb12f87c7408ec933e80",
+  "two_stage_joint_binding": "62831d59f8db47a1ada0b18c7f79497f05a39227b4cb4eefd10eafa8d06c6aaf"
+}
