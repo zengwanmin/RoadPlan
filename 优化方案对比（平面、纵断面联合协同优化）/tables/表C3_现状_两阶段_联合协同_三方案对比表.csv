@@ -1,11 +1,11 @@
 ﻿Metric,M-A (existing),Two-stage (plane→profile),Joint (plane+profile),Two-stage vs A,Joint vs A
-Life-cycle cost C (10^8 RMB),26.4061,23.1582,24.2239,-12.30%,-8.26%
-  Land acquisition CR (10^8),0.5049,0.5028,0.5027,-0.43%,-0.44%
-  Bridge/tunnel CB (10^8),18.1536,14.5783,15.5395,-19.69%,-14.40%
-  Basic construction CS (10^8),6.7835,6.7545,6.7538,-0.43%,-0.44%
-  Maintenance CQ (10^8),0.2924,0.3077,0.3013,+5.21%,+3.01%
-  Earthwork C_TU (10^8),0.6717,1.0149,1.1267,+51.09%,+67.73%
-Life-cycle traffic energy E (10^8 RMB),13.9460,13.4569,13.4766,-3.51%,-3.37%
-Length L (km),22.462,22.366,22.364,-0.43%,-0.44%
-Slope hazard Q,3.309,3.397,3.420,+2.66%,+3.36%
-Min plane radius (m),-,397,401,(>=400),(>=400)
+Life-cycle cost C (10^8 RMB),26.4061,23.0776,24.8166,-12.61%,-6.02%
+  Land acquisition CR (10^8),0.5049,0.5031,0.5011,-0.36%,-0.76%
+  Bridge/tunnel CB (10^8),18.1536,14.4972,15.8673,-20.14%,-12.59%
+  Basic construction CS (10^8),6.7835,6.7588,6.7318,-0.36%,-0.76%
+  Maintenance CQ (10^8),0.2924,0.3082,0.3001,+5.40%,+2.63%
+  Earthwork C_TU (10^8),0.6717,1.0103,1.4163,+50.40%,+110.84%
+Life-cycle traffic energy E (10^8 RMB),13.9460,13.4675,13.3650,-3.43%,-4.17%
+Length L (km),22.462,22.380,22.291,-0.36%,-0.76%
+Slope hazard Q,3.309,3.386,3.471,+2.32%,+4.89%
+Min plane radius (m),-,400,403,(>=400),(>=400)
