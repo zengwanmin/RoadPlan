@@ -2,7 +2,7 @@
 """
 make_outputs.py — 由【平纵联合协同优化】结果生成实验三全部图表
 
-数据源: results/joint_results_w500_nodens.json (run_joint.py 输出, 自由端点 W500 主结果)
+数据源: results/joint_results_w500_nodens.json (run_joint.py 输出, 固定端点 W500 主结果)
         results/twostage_results_w500_nodens.json (run_twostage.py 输出, 两阶段对照, 供表C3)
 表: 表C1(三模式四维指标 + M-B→M-C 变化率)  表C2(现状 M-A vs 本文 M-C 关键指标 + 变化%)
     表C3(现状/两阶段/平纵联合协同 三方案对比表)
@@ -83,11 +83,11 @@ def _validate_sources(d):
             "rerun run_joint.py instead of generating outputs from a legacy JSON.")
     if (float(config.get("corridor_half_w", -1)) != 500.0 or
             config.get("density_on") is not False or
-            config.get("profile_endpoints_fixed") is not False or
+            config.get("profile_endpoints_fixed") is not True or
             config.get("smoke") is not False or
             config.get("schema") != "joint-pareto-resume-v3"):
         raise RuntimeError(
-            "Main-paper outputs require full W500 free-endpoint, density-disabled results")
+            "Main-paper outputs require full W500 fixed-endpoint, density-disabled results")
     if not os.path.isfile(RES_TWO):
         raise FileNotFoundError(
             "Current two-stage result is required for Table C3; rerun run_twostage.py")
@@ -99,15 +99,24 @@ def _validate_sources(d):
             two_provenance.get("config_fingerprint") != _fingerprint(two_config) or
             float(two_config.get("corridor_half_w", -1)) != 500.0 or
             two_config.get("density_on") is not False or
-            two_config.get("profile_endpoints_fixed") is not False or
+            two_config.get("profile_endpoints_fixed") is not True or
             two_config.get("smoke") is not False or
             two_config.get("schema") != "two-stage-pareto-resume-v3"):
         raise RuntimeError(
-            "Two-stage result is not a full W500 free-endpoint, density-disabled result")
+            "Two-stage result is not a full W500 fixed-endpoint, density-disabled result")
     if two_provenance.get("joint_result_sha256") != _sha256_file(RES):
         raise RuntimeError(
             "Two-stage result is not bound to this exact W500 joint result; "
             "refusing to generate a mixed-version Table C3.")
+
+    joint_tie = np.asarray(config.get("profile_endpoint_elevations_m", []),
+                           dtype=float)
+    two_tie = np.asarray(two_config.get("profile_endpoint_elevations_m", []),
+                         dtype=float)
+    if (joint_tie.shape != (2,) or two_tie.shape != (2,) or
+            not np.allclose(joint_tie, two_tie, rtol=0.0, atol=1e-9)):
+        raise RuntimeError(
+            "Joint and two-stage results do not use the same two fixed profile elevations")
 
     if "M_C_scalar" in d or "M_C_scalar" in two_stage:
         raise RuntimeError(
@@ -161,6 +170,12 @@ def _validate_sources(d):
                 float(payload.get("Rmin", -float("inf"))) < 400.0 - 1e-6):
             raise RuntimeError(
                 f"{label} M-C is infeasible; refusing to label Table C3 as R>=400")
+        design_z = np.asarray(payload.get("design_z", []), dtype=float)
+        if (design_z.size < 2 or
+                not np.allclose(design_z[[0, -1]], joint_tie,
+                                rtol=0.0, atol=1e-8)):
+            raise RuntimeError(
+                f"{label} M-C does not satisfy the two fixed profile elevations")
 
     # 两种方法的最终解必须使用同一熵权和同一归一化范围。
     entropy = fair["entropy"]
@@ -191,6 +206,9 @@ def _write_source_provenance(d, two_stage):
         "decision_schema": two_stage["fair_decision"]["schema"],
         "decision_scope": two_stage["fair_decision"]["selection_scope"],
         "common_entropy": two_stage["fair_decision"]["entropy"],
+        "profile_endpoints_fixed": True,
+        "profile_endpoint_elevations_m": d["provenance"]["config"][
+            "profile_endpoint_elevations_m"],
     }
     path = os.path.join(TAB, "SOURCE_PROVENANCE.json")
     tmp = path + ".tmp"
@@ -310,7 +328,8 @@ def table_C2(d):
 def table_C3(d, two_stage):
     """三方案对比: 现状(M-A) vs 两阶段优化 vs 平纵联合协同优化。
     两种方法都在同一权重网格上生成 Pareto 前沿，再使用两条前沿合并
-    后的公共数据范围、归一化和熵权规则分别选出。"""
+    后的公共数据范围、归一化和熵权规则分别选出；两者固定同一对
+    既有道路纵断面接线高程。"""
     dt = two_stage
     A = d["M_A"]              # 现状(联合与两阶段口径一致, 取联合的现状)
     TS = dt["M_C"]            # 两阶段优化方案
@@ -361,7 +380,8 @@ def _append_c3_budget_note():
         "\n> **附注(公平Pareto决策)**: 联合和两阶段使用完全相同的"
         "Pareto权重网格；每个最终解的逻辑预算为联合 iter=1000，两阶段 "
         "Stage1+Stage2 各 iter=500。最终解共用两条前沿合并后的数据范围、"
-        "归一化和唯一熵权，不使用固定权重解。\n"
+        "归一化和唯一熵权，不使用固定权重解；两种方法均将纵断面"
+        "首末端点锚定到同一对既有道路接线高程。\n"
     )
     with open(fn, "a", encoding="utf-8") as f:
         f.write(note)
@@ -580,7 +600,7 @@ def main():
     global RES, RES_TWO
     ap = argparse.ArgumentParser()
     ap.add_argument("--result", default=RES,
-                    help="当前联合主结果，默认W500自由端点、无密度约束结果")
+                    help="当前联合主结果，默认W500固定端点、无密度约束结果")
     ap.add_argument("--two-stage", default=RES_TWO,
                     help="与当前联合结果绑定的两阶段对照结果")
     args = ap.parse_args()

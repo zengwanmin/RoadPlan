@@ -38,8 +38,8 @@ ext = [X0, X0 + NX * CELL, Y0, Y0 + NY * CELL]
 d = json.load(open(RES, encoding='utf-8'))
 meta = d.get('meta', {})
 if (meta.get('density_on') is not False or
-        meta.get('profile_endpoints_fixed') is not False):
-    raise RuntimeError('Fig. C10 requires free-endpoint, density-disabled main results')
+        meta.get('profile_endpoints_fixed') is not True):
+    raise RuntimeError('Fig. C10 requires fixed-endpoint, density-disabled main results')
 if 'M_C' not in d:
     # 公平Pareto口径下，联合原始结果只保存前沿；最终联合 M-C
     # 保存在与该前沿绑定的两阶段结果公共决策中。

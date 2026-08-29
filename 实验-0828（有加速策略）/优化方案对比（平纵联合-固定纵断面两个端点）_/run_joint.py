@@ -242,6 +242,8 @@ def main():
     t0 = time.time()
     align = load_alignment()
     pc = make_plane_context(align)
+    if OJ.PROFILE_ENDPOINTS_FIXED is not True:
+        raise RuntimeError("本实验必须固定纵断面首末两个端点")
     dim = DIM
     lb, ub = np.zeros(dim), np.ones(dim)
     n_pareto = args.pareto
@@ -252,7 +254,7 @@ def main():
     print(f"[数据] 北环高速 {align['total_km']:.3f} km")
     print(f"[联合] 决策维度 dim={dim} (平面模态{N_MODE} + 纵断面{M_PROF}), "
           f"走廊带±{OJ.CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}, "
-          "纵断面端点自由, 建筑密度约束=OFF")
+          "纵断面首末端点固定, 建筑密度约束=OFF")
 
     # ---------- 两个目标的公共参考尺度 ----------
     # joint_baseline 只用于产生两种方法共用的初始种群和 C/E 参考
@@ -270,6 +272,8 @@ def main():
         corridor_half_w=float(OJ.CORRIDOR_HALF_W),
         density_on=False,
         profile_endpoints_fixed=bool(OJ.PROFILE_ENDPOINTS_FIXED),
+        profile_endpoint_elevations_m=[float(pc["gz_meas"][0]),
+                                       float(pc["gz_meas"][-1])],
         smoke=bool(args.smoke),
         dim=int(dim), n_mode=int(N_MODE), M_prof=int(M_PROF),
         pop_size=int(POP_SIZE), max_iter=int(MAX_ITER),
@@ -353,6 +357,8 @@ def main():
                   corridor_half_w=OJ.CORRIDOR_HALF_W, pop_size=POP_SIZE,
                   density_on=False,
                   profile_endpoints_fixed=bool(OJ.PROFILE_ENDPOINTS_FIXED),
+                  profile_endpoint_elevations_m=[float(pc["gz_meas"][0]),
+                                                 float(pc["gz_meas"][-1])],
                   max_iter=MAX_ITER, C_ref=C_ref, E_ref=E_ref,
                   total_km=align["total_km"], Rmin_req=400,
                   step_plane_m=STEP_PLANE_M, step_profile_m=STEP_PROFILE_M,
@@ -360,7 +366,8 @@ def main():
                   n_workers=n_workers,
                   energy_unit="全生命周期元(亿元)",
                   note="平纵联合协同优化(准天然地面DEM口径): OSM交叉桥内生触发, "
-                       "白云山隧道由生态区穿越长度内生, 纵断面首末端自由, "
+                       "白云山隧道由生态区穿越长度内生, "
+                       "纵断面首末端点固定为既有道路接线高程, "
                        f"走廊带±{OJ.CORRIDOR_HALF_W:.0f}m, 建筑密度不进入约束; "
                        "本文件只保存联合求解器的原始Pareto前沿; "
                        "M-C由联合/两阶段前沿合并后的公共极差范围和唯一熵权决策产生"),

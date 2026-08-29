@@ -95,7 +95,7 @@ def _load_joint_reference(path, smoke):
     """Load and validate the exact joint result that defines this control run."""
     if not os.path.isfile(path):
         raise FileNotFoundError(
-            f"Missing joint result {path}; run the free-endpoint W500 joint experiment first")
+            f"Missing joint result {path}; run the fixed-endpoint W500 joint experiment first")
     with open(path, encoding="utf-8") as fp:
         data = json.load(fp)
     provenance = data.get("provenance", {})
@@ -171,7 +171,7 @@ def main():
     joint_config = joint_result["provenance"]["config"]
     if (float(joint_config.get("corridor_half_w", -1)) != float(OJ.CORRIDOR_HALF_W) or
             joint_config.get("density_on") is not False or
-            joint_config.get("profile_endpoints_fixed") is not False):
+            joint_config.get("profile_endpoints_fixed") is not True):
         raise RuntimeError(
             "Joint reference corridor/density/profile-endpoint configuration does not match")
     if joint_config.get("schema") != "joint-pareto-resume-v3":
@@ -187,12 +187,21 @@ def main():
     t0 = time.time()
     align = load_alignment()
     pc = make_plane_context(align)
+    if OJ.PROFILE_ENDPOINTS_FIXED is not True:
+        raise RuntimeError("本实验必须固定纵断面首末两个端点")
+    local_tie = np.asarray([pc["gz_meas"][0], pc["gz_meas"][-1]], dtype=float)
+    joint_tie = np.asarray(
+        joint_config.get("profile_endpoint_elevations_m", []), dtype=float)
+    if (joint_tie.shape != (2,) or
+            not np.allclose(joint_tie, local_tie, rtol=0.0, atol=1e-9)):
+        raise RuntimeError(
+            "Joint reference does not use the current two fixed profile elevations")
     dim = DIM
     print(f"[数据] 北环高速 {align['total_km']:.3f} km")
     print(f"[两阶段对照] dim={dim} (平面模态{N_MODE} + "
           f"纵断面{M_PROF}@{STEP_PROFILE_M:.0f}m), "
           f"走廊带±{OJ.CORRIDOR_HALF_W:.0f}m, pop={POP_SIZE}, iter={MAX_ITER}, "
-          f"Pareto权重点={n_pareto}, 纵断面首末端自由, "
+          f"Pareto权重点={n_pareto}, 纵断面首末端点固定, "
           "建筑密度不进入约束")
 
     # ---------- M-A 现状方案 ----------
@@ -228,6 +237,8 @@ def main():
         corridor_half_w=float(OJ.CORRIDOR_HALF_W),
         density_on=False,
         profile_endpoints_fixed=bool(OJ.PROFILE_ENDPOINTS_FIXED),
+        profile_endpoint_elevations_m=[float(pc["gz_meas"][0]),
+                                       float(pc["gz_meas"][-1])],
         smoke=bool(args.smoke),
         dim=int(dim), n_mode=int(N_MODE), M_prof=int(M_PROF),
         pop_size=int(POP_SIZE), max_iter_each_stage=int(MAX_ITER),
@@ -355,13 +366,16 @@ def main():
                   corridor_half_w=OJ.CORRIDOR_HALF_W, pop_size=POP_SIZE,
                   density_on=False,
                   profile_endpoints_fixed=bool(OJ.PROFILE_ENDPOINTS_FIXED),
+                  profile_endpoint_elevations_m=[float(pc["gz_meas"][0]),
+                                                 float(pc["gz_meas"][-1])],
                   max_iter=MAX_ITER, C_ref=C_ref, E_ref=E_ref,
                   n_pareto=n_pareto, n_workers=n_workers,
                   total_km=align["total_km"], Rmin_req=400,
                   smoke=bool(args.smoke),
                   energy_unit="全生命周期元(亿元, 与C同口径)",
                   method="两阶段对照: 先平面(min平面LCC)后纵断面Pareto权重扫描, "
-                         "平面固定后串联; 最终解与联合方案共用两条前沿"
+                         "平面固定后串联; 纵断面首末端点锚定到既有道路; "
+                         "最终解与联合方案共用两条前沿"
                          "合并后的数据范围、归一化和熵权; "
                          f"平面步长{STEP_PLANE_M:.0f}m/纵断面步长{STEP_PROFILE_M:.0f}m, "
                          "桥隧/成本/能耗口径同联合协同方案",
