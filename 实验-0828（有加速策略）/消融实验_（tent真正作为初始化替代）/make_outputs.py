@@ -31,24 +31,18 @@ plt.rcParams["axes.unicode_minus"] = False
 plt.rcParams["figure.dpi"] = 150
 plt.rcParams["font.size"] = 11
 
-# 变体展示名与顺序(2³全因子8变体; 结果文件缺组合变体时自动跳过, 向后兼容)
-ORDER = ["V1_JS", "V2_JS+Tent", "V3_JS+Levy", "V4_JS+DE",
-         "V6_JS+Tent+Levy", "V7_JS+Tent+DE", "V8_JS+Levy+DE", "V5_IJS"]
+# 5个消融变体的展示名与顺序。
+ORDER = ["V1_JS", "V2_JS+Tent", "V3_JS+Levy", "V4_JS+DE", "V5_IJS"]
 LABEL = {"V1_JS": "V1 JS(基线)", "V2_JS+Tent": "V2 JS+Tent",
          "V3_JS+Levy": "V3 JS+Levy", "V4_JS+DE": "V4 JS+DE",
-         "V6_JS+Tent+Levy": "V6 JS+Tent+Levy", "V7_JS+Tent+DE": "V7 JS+Tent+DE",
-         "V8_JS+Levy+DE": "V8 JS+Levy+DE", "V5_IJS": "V5 IJS(完整)"}
+         "V5_IJS": "V5 IJS(完整)"}
 LABEL_EN = {"V1_JS": "V1 JS (baseline)", "V2_JS+Tent": "V2 JS+Tent",
             "V3_JS+Levy": "V3 JS+Levy", "V4_JS+DE": "V4 JS+DE",
-            "V6_JS+Tent+Levy": "V6 JS+Tent+Levy", "V7_JS+Tent+DE": "V7 JS+Tent+DE",
-            "V8_JS+Levy+DE": "V8 JS+Levy+DE", "V5_IJS": "V5 IJS (full)"}
+            "V5_IJS": "V5 IJS (full)"}
 COLOR = {"V1_JS": "#7f7f7f", "V2_JS+Tent": "#1f77b4", "V3_JS+Levy": "#2ca02c",
-         "V4_JS+DE": "#ff7f0e", "V6_JS+Tent+Levy": "#17becf",
-         "V7_JS+Tent+DE": "#9467bd", "V8_JS+Levy+DE": "#8c564b",
-         "V5_IJS": "#d62728"}
+         "V4_JS+DE": "#ff7f0e", "V5_IJS": "#d62728"}
 # 每代函数求值次数(NFE)倍数: 1 + levy(1) + de(1); tent 仅初始化一次
 NFE_MULT = {"V1_JS": 1, "V2_JS+Tent": 1, "V3_JS+Levy": 2, "V4_JS+DE": 2,
-            "V6_JS+Tent+Levy": 2, "V7_JS+Tent+DE": 2, "V8_JS+Levy+DE": 3,
             "V5_IJS": 3}
 PLOT_MAX_ITER = 300
 
@@ -97,9 +91,6 @@ def table_A1():
         ("V2", "JS + Tent", "✓", "✗", "✗"),
         ("V3", "JS + Levy", "✗", "✓", "✗"),
         ("V4", "JS + DE", "✗", "✗", "✓"),
-        ("V6", "JS + Tent + Levy", "✓", "✓", "✗"),
-        ("V7", "JS + Tent + DE", "✓", "✗", "✓"),
-        ("V8", "JS + Levy + DE", "✗", "✓", "✓"),
         ("V5", "IJS(完整)", "✓", "✓", "✓"),
     ]
     hdr = ["编号", "变体名称", "Tent初始化", "Levy飞行", "差分进化DE"]
@@ -182,13 +173,11 @@ def fig_A2(d):
     base = v["V1_JS"]["mean"]
     comps = [("V1_JS", "JS (baseline)"), ("V2_JS+Tent", "+Tent"),
              ("V3_JS+Levy", "+Levy"), ("V4_JS+DE", "+DE"),
-             ("V6_JS+Tent+Levy", "+Tent+Levy"), ("V7_JS+Tent+DE", "+Tent+DE"),
-             ("V8_JS+Levy+DE", "+Levy+DE"), ("V5_IJS", "IJS (full)")]
-    comps = [(k, lab) for k, lab in comps if k in v]     # 向后兼容旧结果
+             ("V5_IJS", "IJS (full)")]
+    comps = [(k, lab) for k, lab in comps if k in v]
     vals = [v[k]["mean"] for k, _ in comps]
     labels = [lab for _, lab in comps]
-    bar_colors = ["#4c72b0", "#55a3c9", "#5aa469", "#e8a33d",
-                  "#17becf", "#9467bd", "#8c564b", "#c44e52"][:len(comps)]
+    bar_colors = [COLOR[k] for k, _ in comps]
     fig, ax = plt.subplots(figsize=(7.2, 4.8))
     x = np.arange(len(comps))
     bars = ax.bar(x, vals, color=bar_colors, alpha=0.9,
@@ -293,12 +282,7 @@ def table_A3(d, td):
            "Levy逃逸率(停滞≥20代)", "Levy相对ΔF占比(%)",
            "DE相对ΔF占比(%)", "DE效率ΔF/kNFE", "尾段100代DEΔF",
            "多样性@100代", "多样性@末代"]
-    tent_pair_base = {
-        "V2_JS+Tent": "V1_JS",
-        "V6_JS+Tent+Levy": "V3_JS+Levy",
-        "V7_JS+Tent+DE": "V4_JS+DE",
-        "V5_IJS": "V8_JS+Levy+DE",
-    }
+    tent_pair_base = {"V2_JS+Tent": "V1_JS"}
     rows = []
     for k in _order(d):
         trs = tr_all.get(k, [])

@@ -215,7 +215,8 @@ ALGO = dict(
     max_iter=300,        # 最大迭代次数
     CR=0.5,              # 差分进化交叉概率 (§4.2.6 / IJS.m)
     levy_beta=1.5,       # Levy飞行稳定分布参数 (§4.2.5)
-    mu_tent=2.0,         # Tent混沌映射参数 (IJS.m: mu=2)
+    mu_tent=1.99,        # 连续Tent轨迹参数(避免mu=2的float64退化)
+    tent_burn_in=20,     # Tent连续轨迹生成前的预迭代次数
     C0=0.5,              # 时间控制阈值常数 (§4.2.4)
     n_runs=10,           # 独立运行次数
     beta_d=3.0,          # 洋流分布系数 βd (js.m: BestSol-3*rand*Mean)

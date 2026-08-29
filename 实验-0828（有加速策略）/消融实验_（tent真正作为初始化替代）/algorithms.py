@@ -45,24 +45,51 @@ def _levy(dim, beta, rng, sigma_u=None):
     return u / (np.abs(v) ** (1 / beta))
 
 
-def _tent_init(x0, lb, ub, mu, n_steps):
-    """用共享初始种群作为独立Tent链起点，直接生成替代初始种群。"""
+def _tent_init(x0, lb, ub, mu, burn_in):
+    """用连续Tent轨迹生成分层初始种群，并直接替代x0。
+
+    每个维度使用x0首个个体的对应坐标作为一条Tent链的起点；经过
+    burn_in次预迭代后，沿种群个体方向连续递推。随后按每维轨迹值的秩
+    将nPop个点分配到nPop个等宽分层，轨迹值作为层内位置。该过程不调用
+    目标函数、不消耗优化器随机数，因此不增加NFE也不改变Levy/DE随机序列。
+    """
     x0 = np.asarray(x0, dtype=float)
     lb = np.asarray(lb, dtype=float)
     ub = np.asarray(ub, dtype=float)
+    n_pop, dim = x0.shape
     span = ub - lb
-    z = np.divide(x0 - lb, span, out=np.zeros_like(x0), where=span > 0)
-    z = np.clip(z, 0.0, 1.0)
-    for _ in range(n_steps):
-        z = np.where(z >= 0.5, mu * (1.0 - z), mu * z)
-        z = np.clip(z, 0.0, 1.0)
+
+    # 各维度一条连续Tent链；使用共享x0的首行保持配对可复现性。
+    z = np.divide(x0[0] - lb, span,
+                  out=np.full(dim, 0.5, dtype=float), where=span > 0)
+    eps = np.finfo(float).eps
+    z = np.clip(z, eps, 1.0 - eps)
+
+    def tent_step(v):
+        return np.where(v >= 0.5, mu * (1.0 - v), mu * v)
+
+    for _ in range(burn_in):
+        z = tent_step(z)
+
+    chaos = np.empty((n_pop, dim), dtype=float)
+    for i in range(n_pop):
+        chaos[i] = z
+        z = tent_step(z)
+
+    # 基于Tent轨迹秩做每维等宽分层（Tent-rank stratification）。
+    order = np.argsort(chaos, axis=0, kind="stable")
+    ranks = np.empty_like(order)
+    ranks[order, np.arange(dim)[None, :]] = np.arange(n_pop)[:, None]
+    z = (ranks + chaos) / n_pop
+    z = np.clip(z, 0.0, np.nextafter(1.0, 0.0))
+
     return np.where(span > 0, lb + z * span, lb)
 
 
 def run(fobj, lb, ub, pop0, max_iter, seed,
         use_tent=False, use_levy=False, use_de=False,
         CR=0.5, levy_beta=1.5, mu_tent=1.99, beta_d=3.0, C0=0.5,
-        tent_chains=10, record=True, track=False):
+        tent_burn_in=20, record=True, track=False):
     """
     JS/IJS主循环。返回 dict(best_x, best_f, curve, nfe)。
       fobj    : 标量目标 f(x)->float (越小越优)
@@ -79,9 +106,10 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
       mu_tent=1.99(原2.0): μ=2 的 tent 映射在 float64 下等价二进制尾数左移,
         52 位尾数耗尽后(约54次迭代)轨道精确塌缩为 0 不动点; μ=1.99 保持混沌
         遍历性且无二进制退化。
-      Tent 独立链(问题16): 以各变体共享的 pop0 各坐标作为独立链起点，迭代
-        tent_chains 次后直接替代初始种群；不额外生成、评价候选种群，也不与
-        随机种群贪婪合并，因此启用与停用Tent的初始评价次数均为 nPop。
+      Tent 连续链(问题16): 以各变体共享的pop0首行作为各维链起点，
+        预迭代tent_burn_in次后沿个体方向连续生成轨迹，再按每维轨迹秩做
+        等宽分层并直接替代初始种群；不额外评价候选种群，也不与随机
+        种群贪婪合并，因此启用与停用Tent的初始评价次数均为nPop。
       Levy 步长缩放见主循环内注释。
     """
     rng = np.random.default_rng(seed)
@@ -90,7 +118,7 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
     nPop, dim = pop.shape
     span = ub - lb
     if use_tent:
-        pop = _tent_init(pop, lb, ub, mu_tent, tent_chains)
+        pop = _tent_init(pop, lb, ub, mu_tent, tent_burn_in)
     # IJS专用算子常数只计算一次；不消费随机数，也不改变候选生成顺序。
     levy_sigma_u = None
     if use_levy:
@@ -214,14 +242,11 @@ def run(fobj, lb, ub, pop0, max_iter, seed,
     return out
 
 
-# 消融变体配置: 2³ 全因子设计(V1-V5 为原方案, V6-V8 为组合变体, 支持交互效应分解)
+# 消融变体配置: JS基线、3个单组件变体和完整IJS，共5个变体。
 VARIANTS = {
     "V1_JS":         dict(use_tent=False, use_levy=False, use_de=False),
     "V2_JS+Tent":    dict(use_tent=True,  use_levy=False, use_de=False),
     "V3_JS+Levy":    dict(use_tent=False, use_levy=True,  use_de=False),
     "V4_JS+DE":      dict(use_tent=False, use_levy=False, use_de=True),
-    "V6_JS+Tent+Levy": dict(use_tent=True,  use_levy=True,  use_de=False),
-    "V7_JS+Tent+DE":   dict(use_tent=True,  use_levy=False, use_de=True),
-    "V8_JS+Levy+DE":   dict(use_tent=False, use_levy=True,  use_de=True),
     "V5_IJS":        dict(use_tent=True,  use_levy=True,  use_de=True),
 }

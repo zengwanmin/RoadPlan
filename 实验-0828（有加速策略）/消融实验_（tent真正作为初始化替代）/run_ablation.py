@@ -5,7 +5,7 @@ run_ablation.py — 消融实验主程序 (实验设计方案2 · 实验一)
 流程:
   1. 加载北环高速轨迹, 生成纵断面优化上下文(数据.xlsx, 不可杜撰)
   2. 生成初始种群, 用熵权法(式5.3-5.4)客观确定权重, 构建同口径标量目标F
-  3. 8个全因子变体 × 10次独立运行(pop=200, iter=300)
+  3. 5个消融变体 × 10次独立运行(pop=200, iter=300)
   4. 记录 F最优/均值/标准差、收敛代数、运行时间及每次运行的阶段直接贡献,
      保存结果供出图出表
 
@@ -78,7 +78,7 @@ def main():
     C_ref, E_ref = float(C0.mean()), float(E0.mean())
     print(f"[熵权法] wC={wC:.4f}, wE={wE:.4f}; C_ref={C_ref/1e8:.3f}亿, E_ref={E_ref:.0f}")
 
-    # ---- 3. 8变体 × 10次独立运行(全部运行带机制插桩, 问题15) ----
+    # ---- 3. 5变体 × 10次独立运行(全部运行带机制插桩, 问题15) ----
     # 全部运行统一 track=True, 使阶段直接贡献可以按10个配对种子报告分布,
     # 同时避免运行时间统计混合“有插桩/无插桩”两种口径。
     all_res = {}
@@ -91,12 +91,14 @@ def main():
         v_traces = []
         best_x_overall, best_f_overall = None, np.inf
         for r in range(n_runs):
-            # 每次独立运行用不同种子生成独立初始种群(公平: 同一run内8变体共享)
+            # 每次独立运行用不同种子生成独立初始种群(公平: 同一run内5变体共享)
             rng = np.random.default_rng(1000 + r)
             pop0 = rng.random((pop_size, dim))
             f = make_scalar_fn(ctx, wC, wE, C_ref, E_ref)
             t0 = time.time()
             res = run(f, lb, ub, pop0, max_iter=max_iter, seed=1000 + r,
+                      mu_tent=ALGO["mu_tent"],
+                      tent_burn_in=ALGO["tent_burn_in"],
                       track=True, **cfg)
             rt = time.time() - t0
             best_fs.append(res["best_f"])

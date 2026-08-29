@@ -4,7 +4,7 @@ make_outputs_5variants.py — 消融图表的 5 变体精简版(V1 JS / V2 +Tent
 V4 +DE / V5 IJS), 复用 make_outputs.py 的全部绘图/制表函数, 仅过滤变体集合。
 
 数据源不变(results/ablation_results.json + ablation_traces.json, 10 种子);
-输出到独立目录 figures_5变体/ 与 tables_5变体/, 不覆盖 8 变体原版。
+输出到独立目录 figures_5变体/ 与 tables_5变体/。
 用法: python3 make_outputs_5variants.py
 """
 import os
