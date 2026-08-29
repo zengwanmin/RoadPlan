@@ -1,9 +1,23 @@
 {
   "schema": "current-output-sources-v1",
   "joint_result": "results/joint_results_w500_nodens.json",
-  "joint_result_sha256": "84b0a896528c0d7582eaa728571a47d7ab31a23f7b90a83525099faaea9564e6",
-  "joint_config_fingerprint": "6613b422d7055c9b397d90cecce02e8473f8f2ee71dc132bde6f0f8857840f53",
+  "joint_result_sha256": "95a647e932cb7c276a76cd2837742658281d10b2dd3209282694e8cc1037c1cd",
+  "joint_config_fingerprint": "53c9dea19e5940e2f5b4c855b708f1b0bcf89c9312d0d09ea2c18fdeb636bb2c",
   "two_stage_result": "results/twostage_results_w500_nodens.json",
-  "two_stage_result_sha256": "2282a1b7848567c3c26be566936803e64058eef3e9bcb7c681c5533406143def",
-  "two_stage_joint_binding": "84b0a896528c0d7582eaa728571a47d7ab31a23f7b90a83525099faaea9564e6"
+  "two_stage_result_sha256": "7bdc618521c6ebcb8290b90b662631b4db25adc7d3c438c507ac5f645ca258ea",
+  "two_stage_joint_binding": "95a647e932cb7c276a76cd2837742658281d10b2dd3209282694e8cc1037c1cd",
+  "decision_schema": "fair-pareto-common-range-v1",
+  "decision_scope": "joint_and_two_stage_front_union",
+  "common_entropy": {
+    "formula": "w_j=(1-e_j)/sum(1-e_j)",
+    "eC": 0.9241639387541796,
+    "eE": 0.9454886224553979,
+    "wC": 0.5817993966705588,
+    "wE": 0.4182006033294412
+  },
+  "profile_endpoints_fixed": true,
+  "profile_endpoint_elevations_m": [
+    8.59,
+    -4.7
+  ]
 }

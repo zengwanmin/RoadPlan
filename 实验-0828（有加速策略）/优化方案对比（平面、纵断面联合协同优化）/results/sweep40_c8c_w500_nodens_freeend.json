@@ -7,7 +7,7 @@
     "density_on": false,
     "profile_endpoints_fixed": false,
     "protocol": "run_ijs_two_phase soft0.3/hard3.0, joint_baseline seed2025+现状注入, 自由纵断面端点, 无建筑密度约束, OSM交叉桥内生口径",
-    "minutes": 71.4
+    "minutes": 72.3
   },
   "sweep": [
     {
